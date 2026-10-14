@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Creative Resizer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mu:#667085;--bd:#dfe3e8;--ac:#2f5bea;--ac2:#fff;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--card:#1d2026;--tx:#eceff3;--mu:#97a0ad;--bd:#2f343c;--ac:#5b84ff;--ac2:#0b1020}}
+:root[data-theme="dark"]{--bg:#14161a;--card:#1d2026;--tx:#eceff3;--mu:#97a0ad;--bd:#2f343c;--ac:#5b84ff;--ac2:#0b1020}
+*{box-sizing:border-box}html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.w{max-width:1000px;margin:0 auto;padding:20px 16px}
+h1{font-size:20px;margin:0 0 4px}p.s{color:var(--mu);margin:0 0 16px}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
+.c h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mu);margin:0 0 10px}
+#drop{border:2px dashed var(--bd);border-radius:12px;padding:28px;text-align:center;cursor:pointer;color:var(--mu)}
+#drop.on{border-color:var(--ac);color:var(--ac)}
+.row{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+label.k{display:flex;gap:6px;align-items:center;cursor:pointer}
+select,input[type=number]{background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:6px 8px;font:inherit}
+button{background:var(--ac);color:var(--ac2);border:0;border-radius:8px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+button.g{background:transparent;color:var(--tx);border:1px solid var(--bd);font-weight:500;padding:5px 10px}
+button:disabled{opacity:.5;cursor:default}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--bd);border-radius:999px;padding:3px 10px;font-size:13px}
+.grid{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}
+.o{border:1px solid var(--bd);border-radius:10px;padding:8px;background:var(--bg);max-width:100%}
+.o img{display:block;max-width:100%;height:auto;border:1px solid var(--bd);background:repeating-conic-gradient(#8883 0 25%,transparent 0 50%) 0 0/12px 12px}
+.o .m{display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:12px;color:var(--mu);align-items:center}
+.f{margin:14px 0 6px;font-weight:600;overflow-wrap:anywhere}
+#st{color:var(--mu);margin-left:8px}
+</style></head><body><div class="w">
+<h1>Creative Resizer</h1>
+<p class="s">Drop PSD / PNG / JPEG / WebP → get every DSP size. Runs 100% in your browser; nothing is uploaded.</p>
+
+<div class="c"><div id="drop">Click or drop files here (PSD, PNG, JPG, WebP) — multiple allowed</div>
+<input id="fi" type="file" multiple accept=".psd,.png,.jpg,.jpeg,.webp,image/*" hidden>
+<div id="fl" class="chips" style="margin-top:10px"></div></div>
+
+<div class="c"><h2>Output sizes</h2><div id="sz" class="row"></div>
+<div class="row" style="margin-top:10px"><input id="cw" type="number" placeholder="W" style="width:80px"> ×
+<input id="ch" type="number" placeholder="H" style="width:80px"><button class="g" id="add">Add custom</button></div></div>
+
+<div class="c"><h2>Resize mode</h2><div class="row">
+<select id="mode">
+<option value="smart">Smart (crop if aspect is close, else fit + blur)</option>
+<option value="fill">Fill — center crop, no empty space</option>
+<option value="fit">Fit — full image, pad with color</option>
+<option value="blur">Fit — full image, blurred background</option>
+<option value="stretch">Stretch (distorts)</option></select>
+<select id="anc"><option value="0.5">Crop anchor: center</option><option value="0">Crop anchor: top/left</option><option value="1">Crop anchor: bottom/right</option></select>
+<label class="k">Pad color <input id="bg" type="color" value="#ffffff"></label>
+<select id="fmt"><option value="png">PNG</option><option value="jpeg">JPEG</option></select>
+<label class="k">JPEG quality <input id="q" type="number" min="40" max="100" value="90" style="width:64px"></label>
+</div>
+<div class="row" style="margin-top:10px"><b>Wide strips (320x50, 300x50, 320x100)</b>
+<select id="strip"><option value="fill">Crop a horizontal band (no blur)</option><option value="edge">Fit + edge-color fill (clean, no blur)</option><option value="blur">Fit + blurred background</option><option value="same">Use mode above</option></select>
+<label class="k">Crop position top <input id="sy" type="range" min="0" max="100" value="50"> bottom</label></div>
+<div class="row" style="margin-top:10px"><b>Tall sizes (320x480 from wide art)</b>
+<select id="tall"><option value="extend">Fit + extend edges (seamless, default)</option><option value="edge">Fit + edge-color gradient</option><option value="fill">Crop a vertical slice</option><option value="blur">Fit + blurred background</option><option value="same">Use mode above</option></select>
+<label class="k">Crop position left <input id="tx" type="range" min="0" max="100" value="50"> right</label></div></div>
+
+<div class="row" style="margin-bottom:14px"><button id="go" disabled>Generate</button>
+<button id="zip" class="g" disabled>Download all (ZIP)</button><span id="st"></span></div>
+<div id="out"></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ag-psd@15.0.1/dist/bundle.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let sizes=[[300,250],[320,50],[320,100],[300,50],[320,480],[480,320],[1200,627]].map(s=>({w:s[0],h:s[1],on:true}));
+let files=[],results=[];
+function drawSizes(){$('sz').innerHTML='';sizes.forEach((s,i)=>{const l=document.createElement('label');l.className='k';
+l.innerHTML=`<input type="checkbox" ${s.on?'checked':''}> ${s.w}×${s.h}`;l.firstChild.onchange=e=>s.on=e.target.checked;$('sz').appendChild(l)})}
+drawSizes();
+$('add').onclick=()=>{const w=+$('cw').value,h=+$('ch').value;if(w>0&&h>0){sizes.push({w,h,on:true});drawSizes();$('cw').value=$('ch').value=''}};
+const drop=$('drop');drop.onclick=()=>$('fi').click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('on')};drop.ondragleave=()=>drop.classList.remove('on');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('on');load(e.dataTransfer.files)};
+$('fi').onchange=e=>load(e.target.files);
+async function load(list){
+  $('st').textContent='Reading files…';
+  for(const f of list){
+    try{
+      let cv;const n=f.name.toLowerCase();
+      if(n.endsWith('.psd')){
+        if(typeof agPsd==='undefined')throw new Error('PSD reader failed to load');
+        const psd=agPsd.readPsd(await f.arrayBuffer(),{skipLayerImageData:true,skipThumbnail:true});
+        cv=psd.canvas;if(!cv)throw new Error('no composite image in PSD (re-save with Maximize Compatibility)');
+      }else{
+        const bm=await createImageBitmap(f);cv=document.createElement('canvas');cv.width=bm.width;cv.height=bm.height;cv.getContext('2d').drawImage(bm,0,0);
+      }
+      files.push({name:f.name.replace(/\.[^.]+$/,''),cv});
+    }catch(err){alert(f.name+': '+err.message)}
+  }
+  $('fl').innerHTML=files.map(f=>`<span class="chip">${f.name} · ${f.cv.width}×${f.cv.height}</span>`).join('');
+  $('go').disabled=!files.length;$('st').textContent='';
+}
+function step(src,tw,th){ // high quality downscale in halving steps
+  let c=src;
+  while(c.width/2>=tw&&c.height/2>=th){const t=document.createElement('canvas');t.width=Math.ceil(c.width/2);t.height=Math.ceil(c.height/2);
+    const x=t.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(c,0,0,t.width,t.height);c=t}
+  return c;
+}
+function render(src,W,H){
+  const mode0=$('mode').value,a=+$('anc').value,fmt=$('fmt').value;
+  const out=document.createElement('canvas');out.width=W;out.height=H;const x=out.getContext('2d');
+  x.imageSmoothingQuality='high';
+  const sa=src.width/src.height,ta=W/H;
+  let mode=mode0;
+  if(mode==='smart')mode=Math.max(sa/ta,ta/sa)<=1.35?'fill':'blur';
+  let ay=a,ax=a;
+  if(ta<=0.8&&Math.max(sa/ta,ta/sa)>1.35&&mode0!=='stretch'&&$('tall').value!=='same'){mode=$('tall').value;ax=+$('tx').value/100}
+  if(ta>=3&&Math.max(sa/ta,ta/sa)>1.35&&mode0!=='stretch'&&$('strip').value!=='same'){mode=$('strip').value;ay=+$('sy').value/100}
+  if(mode==='edge'){
+    const av=(sx,sy,sw,sh)=>{const t=document.createElement('canvas');t.width=t.height=1;const c=t.getContext('2d');c.drawImage(src,sx,sy,Math.max(1,sw),Math.max(1,sh),0,0,1,1);const d=c.getImageData(0,0,1,1).data;return `rgb(${d[0]},${d[1]},${d[2]})`};
+    const horiz=ta>sa,gr=horiz?x.createLinearGradient(0,0,W,0):x.createLinearGradient(0,0,0,H);
+    gr.addColorStop(0,horiz?av(0,0,src.width*.03,src.height):av(0,0,src.width,src.height*.03));
+    gr.addColorStop(1,horiz?av(src.width*.97,0,src.width*.03,src.height):av(0,src.height*.97,src.width,src.height*.03));
+    x.fillStyle=gr;x.fillRect(0,0,W,H);
+  }
+  if(fmt==='jpeg'||mode==='fit'){x.fillStyle=$('bg').value;x.fillRect(0,0,W,H)}
+  if(mode==='stretch'){x.drawImage(step(src,W,H),0,0,W,H);return out}
+  if(mode==='fill'){
+    const sc=Math.max(W/src.width,H/src.height),cw=W/sc,chh=H/sc;
+    const sx=(src.width-cw)*ax,sy=(src.height-chh)*ay;
+    const s=step(src,src.width*sc,src.height*sc),k=s.width/src.width;
+    x.drawImage(s,sx*k,sy*k,cw*k,chh*k,0,0,W,H);return out;
+  }
+  if(mode==='blur'){ // cover background, blurred, then dim slightly
+    const sc=Math.max(W/src.width,H/src.height),bw=src.width*sc,bh=src.height*sc;
+    const tiny=document.createElement('canvas');tiny.width=Math.max(8,Math.round(W/10));tiny.height=Math.max(8,Math.round(H/10));
+    tiny.getContext('2d').drawImage(src,0,0,tiny.width,tiny.height);
+    x.filter='blur('+Math.max(4,Math.round(Math.min(W,H)/25))+'px)';x.drawImage(tiny,-W*.05,-H*.05,W*1.1,H*1.1);x.filter='none';
+    x.fillStyle='rgba(0,0,0,.18)';x.fillRect(0,0,W,H);
+  }
+  const sc=Math.min(W/src.width,H/src.height),w=Math.round(src.width*sc),h=Math.round(src.height*sc);
+  const dx=Math.round((W-w)/2),dy=Math.round((H-h)/2),fs=step(src,w,h);
+  if(mode==='extend'){
+    x.save();x.beginPath();x.rect(0,0,W,H);x.rect(dx,dy,w,h);x.clip('evenodd');
+    x.filter='blur('+Math.max(3,Math.round(Math.min(W,H)/40))+'px)';
+    const P=24,fw=fs.width,fh=fs.height;
+    if(dy>0){x.drawImage(fs,0,0,fw,3,dx-P,-P,w+2*P,dy+P);x.drawImage(fs,0,fh-3,fw,3,dx-P,dy+h,w+2*P,H-dy-h+P)}
+    if(dx>0){x.drawImage(fs,0,0,3,fh,-P,dy-P,dx+P,h+2*P);x.drawImage(fs,fw-3,0,3,fh,dx+w,dy-P,W-dx-w+P,h+2*P)}
+    x.restore();
+  }
+  x.drawImage(fs,dx,dy,w,h);return out;
+}
+$('go').onclick=async()=>{
+  const act=sizes.filter(s=>s.on);if(!act.length)return alert('Select at least one size');
+  $('out').innerHTML='';results=[];$('go').disabled=true;
+  const fmt=$('fmt').value,ext=fmt==='png'?'png':'jpg',q=Math.min(100,Math.max(40,+$('q').value||90))/100;
+  for(const f of files){
+    const h=document.createElement('div');h.className='f';h.textContent=f.name;$('out').appendChild(h);
+    const g=document.createElement('div');g.className='grid';$('out').appendChild(g);
+    for(const s of act){
+      $('st').textContent=`Processing ${f.name} ${s.w}×${s.h}…`;await new Promise(r=>setTimeout(r));
+      const cv=render(f.cv,s.w,s.h);
+      const blob=await new Promise(r=>cv.toBlob(r,'image/'+fmt,q));
+      const name=`${f.name}_${s.w}x${s.h}.${ext}`;results.push({name,blob});
+      const url=URL.createObjectURL(blob),d=document.createElement('div');d.className='o';
+      d.innerHTML=`<img src="${url}" width="${Math.min(s.w,420)}" alt="${name}"><div class="m"><span>${s.w}×${s.h} · ${(blob.size/1024).toFixed(1)} KB</span><a href="${url}" download="${name}"><button class="g">Save</button></a></div>`;
+      g.appendChild(d);
+    }
+  }
+  $('st').textContent=`Done — ${results.length} images`;$('go').disabled=false;$('zip').disabled=false;
+};
+$('zip').onclick=async()=>{
+  if(typeof JSZip==='undefined')return alert('ZIP library failed to load');
+  const z=new JSZip();results.forEach(r=>z.file(r.name,r.blob));
+  const b=await z.generateAsync({type:'blob'}),a=document.createElement('a');
+  a.href=URL.createObjectURL(b);a.download='resized_creatives.zip';a.click();
+};
+</script></body></html>
