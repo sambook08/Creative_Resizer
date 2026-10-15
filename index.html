@@ -60,23 +60,9 @@ button:disabled{opacity:.5;cursor:default}
 <select id="tall"><option value="extend">Fit + extend edges (seamless, default)</option><option value="edge">Fit + edge-color gradient</option><option value="fill">Crop a vertical slice</option><option value="blur">Fit + blurred background</option><option value="same">Use mode above</option></select>
 <label class="k">Crop position left <input id="tx" type="range" min="0" max="100" value="50"> right</label></div></div>
 
-<div class="c"><h2>GIF animation (fade-in + pulse)</h2><div class="row">
-<label class="k">Duration (s) <input id="gd" type="number" min="1" max="30" step="0.5" value="3" style="width:64px"></label>
-<label class="k">FPS <input id="gf" type="number" min="4" max="25" value="10" style="width:56px"></label>
-<label class="k">Fade-in (s) <input id="gfi" type="number" min="0" max="10" step="0.1" value="0.6" style="width:64px"></label>
-<label class="k">Pulse % <input id="gp" type="number" min="0" max="20" step="0.5" value="5" style="width:56px"></label>
-<label class="k">Pulses <input id="gn" type="number" min="0" max="10" value="2" style="width:56px"></label>
-<label class="k">Plays (0 = forever) <input id="gl" type="number" min="0" max="50" value="0" style="width:56px"></label>
-<label class="k">Max KB (0 = no limit) <input id="gk" type="number" min="0" max="5000" value="150" style="width:72px"></label>
-<label class="k">Min colors <select id="gmc"><option value="256">256 (best)</option><option value="128" selected>128</option><option value="64">64</option><option value="32">32</option><option value="16">16</option></select></label>
-<label class="k">Smoothing (0-10) <input id="gs" type="number" min="0" max="10" value="2" style="width:56px" title="Higher = smaller file, tiny colour changes between frames are skipped"></label></div>
-<p class="s" style="margin:8px 0 0">Click Generate first, then Generate GIFs. GIFs use the resized images as they are now, including any drag, zoom or layer edits. The fade starts from the pad color. If a GIF is over Max KB, the tool first raises smoothing, then lowers FPS, and only then colors (never below Min colors). If it is still over, it is marked in red; lower Pulse %, FPS or Duration, or raise Max KB.</p></div>
-
 <div class="row" style="margin-bottom:14px"><button id="go" disabled>Generate</button>
-<button id="zip" class="g" disabled>Download all (ZIP)</button>
-<button id="gg" disabled>Generate GIFs</button><button id="gz" class="g" disabled>Download GIFs (ZIP)</button><span id="st"></span></div>
+<button id="zip" class="g" disabled>Download all (ZIP)</button><span id="st"></span></div>
 <div id="out"></div>
-<div id="gout"></div>
 </div>
 <div id="ed" style="display:none;position:fixed;inset:0;z-index:50;background:var(--bg);flex-direction:column;gap:10px;padding:12px;padding-top:calc(12px + env(safe-area-inset-top,0px))">
 <div class="row" style="justify-content:space-between"><b id="edt"></b><span class="row"><select id="edm"><option value="cover">Start: fill canvas</option><option value="fit">Start: fit whole design</option></select><button class="g" id="edf">Fit view</button><button class="g" id="edr">Reset</button><button class="g" id="edc">Cancel</button><button id="eda">Apply</button></span></div>
@@ -282,7 +268,7 @@ function initOv(r){ // starting point that matches the auto result
 }
 $('go').onclick=async()=>{
   const act=sizes.filter(s=>s.on);if(!act.length)return alert('Select at least one size');
-  $('out').innerHTML='';$('gout').innerHTML='';gifs=[];$('gz').disabled=true;$('gg').disabled=true;results=[];$('go').disabled=true;
+  $('out').innerHTML='';results=[];$('go').disabled=true;
   const fmt=$('fmt').value,ext=fmt==='png'?'png':'jpg',q=Math.min(100,Math.max(40,+$('q').value||90))/100;
   for(const f of files){
     const h=document.createElement('div');h.className='f';h.textContent=f.name;$('out').appendChild(h);
@@ -308,131 +294,12 @@ $('go').onclick=async()=>{
       cv.onpointerup=cv.onpointercancel=()=>{st=null};
     }
   }
-  $('st').textContent=`Done — ${results.length} images. Drag any preview to reposition it; use its slider to zoom.`;$('go').disabled=false;$('zip').disabled=false;$('gg').disabled=false;
+  $('st').textContent=`Done — ${results.length} images. Drag any preview to reposition it; use its slider to zoom.`;$('go').disabled=false;$('zip').disabled=false;
 };
 $('zip').onclick=async()=>{
   if(typeof JSZip==='undefined')return alert('ZIP library failed to load');
   const z=new JSZip();for(const r of results)z.file(r.name,await blobOf(r));
   const b=await z.generateAsync({type:'blob'}),a=document.createElement('a');
   a.href=URL.createObjectURL(b);a.download='resized_creatives.zip';a.click();
-};
-/* ===== GIF export: fade-in + pulse (self-contained encoder, no extra library) ===== */
-let gifs=[];
-const num=(id,d)=>{const v=parseFloat($(id).value);return isNaN(v)?d:v};
-const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
-function gifFrames(r,fps,P){
-  const W=r.s.w,H=r.s.h,delay=Math.max(2,Math.round(100/fps)),n=Math.max(2,Math.round(P.dur*100/delay));
-  const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});x.imageSmoothingQuality='high';
-  const fadeT=Math.min(P.fade,P.dur*0.6),total=n*delay/100,bg=$('bg').value,frames=[],solid=[];
-  for(let i=0;i<n;i++){
-    const t=i*delay/100,a=fadeT>0?Math.min(1,t/fadeT):1,e=a*a*(3-2*a);
-    const u=total>fadeT?clamp((t-fadeT)/(total-fadeT),0,1):0;
-    const sc=1+P.pulse/100*0.5*(1-Math.cos(2*Math.PI*P.pulses*u));
-    x.globalAlpha=1;x.fillStyle=bg;x.fillRect(0,0,W,H);
-    x.globalAlpha=e;x.save();x.translate(W/2,H/2);x.scale(sc,sc);x.drawImage(r.cv,-W/2,-H/2);x.restore();x.globalAlpha=1;
-    frames.push(x.getImageData(0,0,W,H).data);solid.push(e>=0.98);
-  }
-  return{frames,delay,solid};
-}
-function buildPalette(frames,W,H,ncol,solid){ // median cut on a 15-bit histogram, palette = true mean colors
-  const cnt=new Uint32Array(32768),sr=new Float64Array(32768),sg=new Float64Array(32768),sb=new Float64Array(32768);
-  const stride=Math.max(1,Math.floor(frames.length*W*H/250000));
-  frames.forEach((d,fi)=>{const st=solid&&!solid[fi]?stride*4:stride;for(let p=fi%st;p<W*H;p+=st){const o=p*4,r=d[o],g=d[o+1],b=d[o+2],k=(r>>3)<<10|(g>>3)<<5|(b>>3);cnt[k]++;sr[k]+=r;sg[k]+=g;sb[k]+=b}});
-  const ents=[];for(let k=0;k<32768;k++)if(cnt[k]){const c=cnt[k];ents.push({c,r:sr[k]/c,g:sg[k]/c,b:sb[k]/c})}
-  const stat=bx=>{const lo=[255,255,255],hi=[0,0,0];let n=0;for(const e of bx){n+=e.c;const v=[e.r,e.g,e.b];for(let i=0;i<3;i++){if(v[i]<lo[i])lo[i]=v[i];if(v[i]>hi[i])hi[i]=v[i]}}
-    const rg=[hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]],ch=rg[0]>=rg[1]&&rg[0]>=rg[2]?0:rg[1]>=rg[2]?1:2;return{n,ch,rg:rg[ch]}};
-  let boxes=[ents];
-  while(boxes.length<ncol){
-    let bi=-1,bp=0;boxes.forEach((bx,i)=>{if(bx.length<2)return;const s=stat(bx),pr=s.rg*Math.sqrt(s.n);if(pr>bp){bp=pr;bi=i}});
-    if(bi<0)break;
-    const bx=boxes[bi],key='rgb'[stat(bx).ch];bx.sort((a,b)=>a[key]-b[key]);
-    let tot=0;for(const e of bx)tot+=e.c;let acc=0,cut=1;
-    for(let i=0;i<bx.length-1;i++){acc+=bx[i].c;cut=i+1;if(acc>=tot/2)break}
-    boxes.splice(bi,1,bx.slice(0,cut),bx.slice(cut));
-  }
-  const pal=boxes.map(bx=>{let n=0,r=0,g=0,b=0;for(const e of bx){n+=e.c;r+=e.r*e.c;g+=e.g*e.c;b+=e.b*e.c}return[Math.round(r/n),Math.round(g/n),Math.round(b/n)]});
-  if(!pal.length)pal.push([0,0,0]);
-  let k=1;while((1<<k)<pal.length)k++;
-  return{pal,k};
-}
-function lzwBlocks(idx,minCode,out){
-  const clear=1<<minCode,eoi=clear+1,HS=9973,hk=new Int32Array(HS).fill(-1),hv=new Int32Array(HS),buf=[];
-  let next=eoi+1,bits=minCode+1,cur=0,nb=0;
-  const emit=c=>{cur|=c<<nb;nb+=bits;while(nb>=8){buf.push(cur&255);cur>>>=8;nb-=8}};
-  emit(clear);let pre=idx[0];
-  for(let i=1;i<idx.length;i++){
-    const c=idx[i],key=(pre<<8)|c;let h=(Math.imul(key,2654435761)>>>0)%HS,f=-1;
-    while(hk[h]!==-1){if(hk[h]===key){f=hv[h];break}h=(h+1)%HS}
-    if(f>=0){pre=f;continue}
-    emit(pre);
-    if(next>=(1<<bits)&&bits<12)bits++;
-    if(next<4096){hk[h]=key;hv[h]=next++}else{emit(clear);hk.fill(-1);next=eoi+1;bits=minCode+1}
-    pre=c;
-  }
-  emit(pre);if(next>=(1<<bits)&&bits<12)bits++;emit(eoi);if(nb>0)buf.push(cur&255);
-  out.push(minCode);
-  for(let i=0;i<buf.length;i+=255){const n=Math.min(255,buf.length-i);out.push(n);for(let j=0;j<n;j++)out.push(buf[i+j])}
-  out.push(0);
-}
-function encodeGif(frames,W,H,ncol,delay,plays,tol,solid){
-  const{pal}=buildPalette(frames,W,H,Math.max(2,ncol-1),solid),tI=pal.length;let k=1;while((1<<k)<=tI)k++;
-  const b=[],w16=v=>b.push(v&255,(v>>8)&255);
-  for(const ch of'GIF89a')b.push(ch.charCodeAt(0));
-  w16(W);w16(H);b.push(0x80|0x70|(k-1),0,0);
-  for(let i=0;i<(1<<k);i++){const c=pal[i]||[0,0,0];b.push(c[0],c[1],c[2])}
-  if(plays!==1){b.push(0x21,0xFF,0x0B);for(const ch of'NETSCAPE2.0')b.push(ch.charCodeAt(0));b.push(3,1);w16(plays===0?0:plays-1);b.push(0)}
-  const cache=new Int16Array(32768).fill(-1),idx=new Uint8Array(W*H),minCode=Math.max(2,k),shown=new Int16Array(W*H).fill(-1);
-  const dist=(a,c)=>{const q=pal[a],z=pal[c],dr=q[0]-z[0],dg=q[1]-z[1],db=q[2]-z[2];return dr*dr*2+dg*dg*4+db*db*3};
-  for(const d of frames){
-    for(let p=0,o=0;p<W*H;p++,o+=4){
-      const r=d[o],g=d[o+1],bl=d[o+2],key=(r>>3)<<10|(g>>3)<<5|(bl>>3);let v=cache[key];
-      if(v<0){let best=1e9;for(let i=0;i<pal.length;i++){const q=pal[i],dr=q[0]-r,dg=q[1]-g,db=q[2]-bl,dd=dr*dr*2+dg*dg*4+db*db*3;if(dd<best){best=dd;v=i}}cache[key]=v}
-      const sh=shown[p];
-      if(sh>=0&&(sh===v||(tol>0&&dist(sh,v)<=tol)))idx[p]=tI;else{idx[p]=v;shown[p]=v}
-    }
-    b.push(0x21,0xF9,4,0x05);w16(delay);b.push(tI,0);
-    b.push(0x2C);w16(0);w16(0);w16(W);w16(H);b.push(0);
-    lzwBlocks(idx,minCode,b);
-  }
-  b.push(0x3B);
-  return new Uint8Array(b);
-}
-$('gg').onclick=async()=>{
-  if(!results.length)return;
-  const P={dur:clamp(num('gd',3),1,30),fade:clamp(num('gfi',0.6),0,10),pulse:clamp(num('gp',5),0,20),pulses:clamp(Math.round(num('gn',2)),0,10)};
-  const fps=clamp(Math.round(num('gf',10)),4,25),plays=clamp(Math.round(num('gl',0)),0,50),cap=Math.max(0,num('gk',150));
-  const minC=+$('gmc').value||128,sm=clamp(num('gs',2),0,10),T=l=>Math.round(clamp(l,0,10)**2*4);
-  // [fps factor, colors, smoothing]: raise smoothing first, then lower fps, colors last (never below Min colors)
-  const tries=(cap>0?[[1,256,sm],[1,256,sm+3],[.7,256,sm+3],[.7,128,sm+3],[.5,128,sm+3],[.5,64,sm+3],[.5,32,sm+3],[.5,16,sm+3]]:[[1,256,sm]]).filter((t,i)=>i===0||t[1]>=minC);
-  $('gout').innerHTML='';gifs=[];$('gg').disabled=true;$('gz').disabled=true;$('go').disabled=true;
-  let lastFile=null,grid=null;
-  for(let ri=0;ri<results.length;ri++){
-    const r=results[ri],W=r.s.w,H=r.s.h;
-    if(r.file!==lastFile){lastFile=r.file;const h=document.createElement('div');h.className='f';h.textContent=r.file.name+' \u2014 GIFs';$('gout').appendChild(h);grid=document.createElement('div');grid.className='grid';$('gout').appendChild(grid)}
-    let best=null,fr=null,frFps=0;
-    for(const[fs,nc,sl]of tries){
-      $('st').textContent=`GIF ${ri+1}/${results.length} \u00b7 ${W}\u00d7${H} \u00b7 ${nc} colors\u2026`;await new Promise(z=>setTimeout(z));
-      const f=Math.max(4,Math.round(fps*fs));
-      if(!fr||f!==frFps){fr=gifFrames(r,f,P);frFps=f}
-      const bytes=encodeGif(fr.frames,W,H,nc,fr.delay,plays,T(sl),fr.solid);
-      if(!best||bytes.length<best.bytes.length)best={bytes,fps:Math.round(100/fr.delay),nc,frames:fr.frames.length};
-      if(!cap||bytes.length/1024<=cap)break;
-    }
-    const blob=new Blob([best.bytes],{type:'image/gif'}),url=URL.createObjectURL(blob),kb=best.bytes.length/1024,over=cap>0&&kb>cap;
-    const name=r.name.replace(/\.[^.]+$/,'')+'.gif';gifs.push({name,blob});
-    const d=document.createElement('div');d.className='o';
-    const im=document.createElement('img');im.src=url;im.style.width=W+'px';im.style.maxWidth='100%';d.appendChild(im);
-    const m=document.createElement('div');m.className='m';
-    m.innerHTML=`<span>${W}\u00d7${H} \u00b7 <b>${kb.toFixed(1)} KB</b> \u00b7 ${best.frames}f @${best.fps}fps \u00b7 ${best.nc}c${over?' \u00b7 <span style="color:#d92d20">over '+cap+' KB</span>':''}</span><button class="g sv">Save</button>`;
-    m.querySelector('.sv').onclick=()=>{const a=document.createElement('a');a.href=url;a.download=name;a.click()};
-    d.appendChild(m);grid.appendChild(d);
-  }
-  $('st').textContent=`Done \u2014 ${gifs.length} GIFs.`;$('gg').disabled=false;$('gz').disabled=false;$('go').disabled=false;
-};
-$('gz').onclick=async()=>{
-  if(typeof JSZip==='undefined')return alert('ZIP library failed to load');
-  const z=new JSZip();for(const g of gifs)z.file(g.name,g.blob);
-  const b=await z.generateAsync({type:'blob'}),a=document.createElement('a');
-  a.href=URL.createObjectURL(b);a.download='resized_gifs.zip';a.click();
 };
 </script></body></html>
