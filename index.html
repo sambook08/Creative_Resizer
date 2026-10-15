@@ -25,6 +25,7 @@ button:disabled{opacity:.5;cursor:default}
 .o{border:1px solid var(--bd);border-radius:10px;padding:8px;background:var(--bg);max-width:100%}
 .o img{display:block;max-width:100%;height:auto;border:1px solid var(--bd);background:repeating-conic-gradient(#8883 0 25%,transparent 0 50%) 0 0/12px 12px}
 .o .m{display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:12px;color:var(--mu);align-items:center}
+.o .m{flex-wrap:wrap}
 .f{margin:14px 0 6px;font-weight:600;overflow-wrap:anywhere}
 #st{color:var(--mu);margin-left:8px}
 </style></head><body><div class="w">
@@ -63,6 +64,11 @@ button:disabled{opacity:.5;cursor:default}
 <button id="zip" class="g" disabled>Download all (ZIP)</button><span id="st"></span></div>
 <div id="out"></div>
 </div>
+<div id="ed" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;overflow:auto;padding:16px">
+<div class="c" style="max-width:1000px;margin:0 auto"><div class="row" style="justify-content:space-between"><b id="edt"></b><span class="row"><select id="edm"><option value="cover">Start: fill canvas</option><option value="fit">Start: fit whole design</option></select><button class="g" id="edr">Reset</button><button class="g" id="edc">Cancel</button><button id="eda">Apply</button></span></div>
+<p class="s" style="margin:8px 0">Click a layer in the preview or the list and drag to move it. Use the slider to resize it. Untick to hide.</p>
+<div class="row" style="align-items:flex-start"><canvas id="edv" style="max-width:100%;height:auto;border:1px solid var(--bd);touch-action:none;cursor:move"></canvas>
+<div style="flex:1;min-width:220px"><div id="edl" style="max-height:300px;overflow:auto;margin-bottom:10px"></div><label class="k">Size <input id="eds" type="range" min="5" max="500" value="100" disabled></label></div></div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ag-psd@15.0.1/dist/bundle.js"></script>
 <script>
@@ -177,8 +183,52 @@ function render(src,W,H,ov){
   x.drawImage(fs,dx,dy,w,h);return out;
 }
 const blobOf=r=>new Promise(res=>r.cv.toBlob(res,'image/'+r.fmt,r.q));
+const BM={multiply:'multiply',screen:'screen',overlay:'overlay',darken:'darken',lighten:'lighten','color dodge':'color-dodge','color burn':'color-burn','hard light':'hard-light','soft light':'soft-light',difference:'difference',exclusion:'exclusion',hue:'hue',saturation:'saturation',color:'color',luminosity:'luminosity'};
+let E=null;
+function initT(mode){const L=E.f.lay,k=(mode==='fit'?Math.min:Math.max)(E.W/L.w,E.H/L.h),ox=(E.W-L.w*k)/2,oy=(E.H-L.h*k)/2;
+  E.t=L.list.map(l=>({x:ox+l.left*k,y:oy+l.top*k,k,k0:k}));E.vis=L.list.map(()=>true)}
+function paint(x,outline,final){
+  x.fillStyle=$('bg').value;x.fillRect(0,0,E.W,E.H);x.imageSmoothingQuality='high';
+  E.f.lay.list.forEach((l,i)=>{if(!E.vis[i])return;const t=E.t[i],w=l.cv.width*t.k,h=l.cv.height*t.k;if(w<1||h<1)return;
+    x.globalAlpha=l.op;x.globalCompositeOperation=l.bm;x.drawImage(final?step(l.cv,Math.round(w),Math.round(h)):l.cv,t.x,t.y,w,h)});
+  x.globalAlpha=1;x.globalCompositeOperation='source-over';
+  if(outline&&E.sel>=0&&E.vis[E.sel]){const l=E.f.lay.list[E.sel],t=E.t[E.sel];x.strokeStyle='#2f80ff';x.lineWidth=Math.max(1,E.W/300);x.setLineDash([6,4]);x.strokeRect(t.x,t.y,l.cv.width*t.k,l.cv.height*t.k);x.setLineDash([])}
+}
+function drawEd(){paint($('edv').getContext('2d'),true,false)}
+function syncSel(){
+  const el=$('edl');el.innerHTML='';
+  [...E.f.lay.list.keys()].reverse().forEach(i=>{const d=document.createElement('div'),cb=document.createElement('input');
+    d.style.cssText='display:flex;gap:6px;padding:3px 6px;border-radius:6px;cursor:pointer;'+(i===E.sel?'background:var(--bd)':'');
+    cb.type='checkbox';cb.checked=E.vis[i];cb.onclick=e=>{e.stopPropagation();E.vis[i]=cb.checked;drawEd()};
+    d.append(cb,document.createTextNode(E.f.lay.list[i].name));d.onclick=()=>{E.sel=i;syncSel();drawEd()};el.appendChild(d)});
+  $('eds').disabled=E.sel<0;if(E.sel>=0){const t=E.t[E.sel];$('eds').value=Math.round(t.k/t.k0*100)}
+}
+function openEd(r){
+  const f=r.file;
+  try{if(!f.lay){const psd=agPsd.readPsd(f.buf,{skipThumbnail:true}),list=[];
+    (function walk(a){for(const l of a||[]){if(l.hidden||/remove this layer/i.test(l.name||''))continue;if(l.children){walk(l.children);continue}
+      if(l.canvas)list.push({name:l.name||'Layer',cv:l.canvas,left:l.left||0,top:l.top||0,op:l.opacity==null?1:l.opacity,bm:BM[l.blendMode]||'source-over'})}})(psd.children);
+    f.lay={w:psd.width,h:psd.height,list}}}catch(e){return alert('Could not read layers: '+e.message)}
+  E={r,f,W:r.s.w,H:r.s.h,sel:-1,drag:null};
+  if(r.edit){E.t=r.edit.t.map(o=>({...o}));E.vis=[...r.edit.vis]}else initT('cover');
+  const c=$('edv');c.width=E.W;c.height=E.H;c.style.width=Math.min(640,E.W<400?E.W*2:E.W)+'px';
+  $('edt').textContent='Edit layers \u2014 '+r.name;$('edm').value='cover';$('ed').style.display='block';syncSel();drawEd();
+}
+const pt=e=>{const b=$('edv').getBoundingClientRect();return{x:(e.clientX-b.left)*E.W/b.width,y:(e.clientY-b.top)*E.H/b.height}};
+function hit(i,p){const l=E.f.lay.list[i],t=E.t[i],lx=Math.floor((p.x-t.x)/t.k),ly=Math.floor((p.y-t.y)/t.k);
+  if(lx<0||ly<0||lx>=l.cv.width||ly>=l.cv.height)return false;return l.cv.getContext('2d').getImageData(lx,ly,1,1).data[3]>12}
+$('edv').onpointerdown=e=>{if(!E)return;const p=pt(e);let h=-1;for(let i=E.t.length-1;i>=0;i--){if(E.vis[i]&&hit(i,p)){h=i;break}}
+  E.sel=h;syncSel();drawEd();if(h>=0){E.drag=p;e.target.setPointerCapture(e.pointerId)}};
+$('edv').onpointermove=e=>{if(!E||!E.drag||E.sel<0)return;const p=pt(e),t=E.t[E.sel];t.x+=p.x-E.drag.x;t.y+=p.y-E.drag.y;E.drag=p;drawEd()};
+$('edv').onpointerup=$('edv').onpointercancel=()=>{if(E)E.drag=null};
+$('eds').oninput=()=>{if(!E||E.sel<0)return;const l=E.f.lay.list[E.sel],t=E.t[E.sel],cx=t.x+l.cv.width*t.k/2,cy=t.y+l.cv.height*t.k/2;
+  t.k=t.k0*$('eds').value/100;t.x=cx-l.cv.width*t.k/2;t.y=cy-l.cv.height*t.k/2;drawEd()};
+$('edm').onchange=$('edr').onclick=()=>{if(!E)return;initT($('edm').value);E.sel=-1;syncSel();drawEd()};
+$('edc').onclick=()=>{$('ed').style.display='none';E=null};
+$('eda').onclick=()=>{if(!E)return;const c=document.createElement('canvas');c.width=E.W;c.height=E.H;paint(c.getContext('2d'),false,true);
+  const r=E.r;r.lay=c;r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);$('ed').style.display='none';E=null};
 function repaint(r){
-  const n=render(r.src,r.s.w,r.s.h,r.ov),c=r.cv.getContext('2d');c.clearRect(0,0,r.s.w,r.s.h);c.drawImage(n,0,0);
+  const n=r.lay||render(r.src,r.s.w,r.s.h,r.ov),c=r.cv.getContext('2d');c.clearRect(0,0,r.s.w,r.s.h);c.drawImage(n,0,0);
   clearTimeout(r.t);r.t=setTimeout(async()=>{const b=await blobOf(r);r.kb.textContent=(b.size/1024).toFixed(1)+' KB'},250);
 }
 function initOv(r){ // starting point that matches the auto result
@@ -196,19 +246,20 @@ $('go').onclick=async()=>{
     for(const s of act){
       $('st').textContent=`Processing ${f.name} ${s.w}×${s.h}…`;await new Promise(r=>setTimeout(r));
       const cv=render(f.cv,s.w,s.h);
-      const r={name:`${f.name}_${s.w}x${s.h}.${ext}`,cv,src:f.cv,s,ov:null,fmt,q};results.push(r);
+      const r={name:`${f.name}_${s.w}x${s.h}.${ext}`,cv,src:f.cv,file:f,s,ov:null,fmt,q};results.push(r);
       cv.style.cssText=`display:block;max-width:100%;height:auto;width:${s.w>=420?420:Math.round(s.w*1.3)}px;border:1px solid var(--bd);cursor:grab;touch-action:none`;
       const d=document.createElement('div');d.className='o';d.appendChild(cv);
       const m=document.createElement('div');m.className='m';
-      m.innerHTML=`<span>${s.w}×${s.h} · <b class="kb"></b></span><input type="range" min="10" max="300" value="${Math.round(initOv(r).z*100)}" style="width:80px" title="Zoom"><button class="g rs">Reset</button><button class="g sv">Save</button>`;
+      m.innerHTML=`<span>${s.w}×${s.h} · <b class="kb"></b></span><input type="range" min="10" max="300" value="${Math.round(initOv(r).z*100)}" style="width:80px" title="Zoom">${f.buf?'<button class="g ed">Edit layers</button>':''}<button class="g rs">Reset</button><button class="g sv">Save</button>`;
       d.appendChild(m);g.appendChild(d);
       r.kb=m.querySelector('.kb');const sl=m.querySelector('input');
       blobOf(r).then(b=>r.kb.textContent=(b.size/1024).toFixed(1)+' KB');
-      sl.oninput=()=>{if(!r.ov)r.ov=initOv(r);r.ov.z=sl.value/100;repaint(r)};
-      m.querySelector('.rs').onclick=()=>{r.ov=null;sl.value=Math.round(initOv(r).z*100);repaint(r)};
+      sl.oninput=()=>{if(r.lay)return;if(!r.ov)r.ov=initOv(r);r.ov.z=sl.value/100;repaint(r)};
+      m.querySelector('.rs').onclick=()=>{r.ov=null;r.lay=null;r.edit=null;sl.value=Math.round(initOv(r).z*100);repaint(r)};
       m.querySelector('.sv').onclick=async()=>{const b=await blobOf(r),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=r.name;a.click()};
+      const eb=m.querySelector('.ed');if(eb)eb.onclick=()=>openEd(r);
       let st=null;
-      cv.onpointerdown=e=>{cv.setPointerCapture(e.pointerId);if(!r.ov)r.ov=initOv(r);st={x:e.clientX,y:e.clientY}};
+      cv.onpointerdown=e=>{if(r.lay)return;cv.setPointerCapture(e.pointerId);if(!r.ov)r.ov=initOv(r);st={x:e.clientX,y:e.clientY}};
       cv.onpointermove=e=>{if(!st)return;const k=s.w/cv.getBoundingClientRect().width;r.ov.x+=(e.clientX-st.x)*k/s.w;r.ov.y+=(e.clientY-st.y)*k/s.h;st={x:e.clientX,y:e.clientY};repaint(r)};
       cv.onpointerup=cv.onpointercancel=()=>{st=null};
     }
