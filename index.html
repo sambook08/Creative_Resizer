@@ -64,11 +64,16 @@ button:disabled{opacity:.5;cursor:default}
 <button id="zip" class="g" disabled>Download all (ZIP)</button><span id="st"></span></div>
 <div id="out"></div>
 </div>
-<div id="ed" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;overflow:auto;padding:16px">
-<div class="c" style="max-width:1000px;margin:0 auto"><div class="row" style="justify-content:space-between"><b id="edt"></b><span class="row"><select id="edm"><option value="cover">Start: fill canvas</option><option value="fit">Start: fit whole design</option></select><button class="g" id="edr">Reset</button><button class="g" id="edc">Cancel</button><button id="eda">Apply</button></span></div>
-<p class="s" style="margin:8px 0">Click a layer in the preview or the list and drag to move it. Use the slider to resize it. Untick to hide.</p>
-<div class="row" style="align-items:flex-start"><canvas id="edv" style="max-width:100%;height:auto;border:1px solid var(--bd);touch-action:none;cursor:move"></canvas>
-<div style="flex:1;min-width:220px"><div id="edl" style="max-height:300px;overflow:auto;margin-bottom:10px"></div><label class="k">Size <input id="eds" type="range" min="5" max="500" value="100" disabled></label></div></div></div></div>
+<div id="ed" style="display:none;position:fixed;inset:0;z-index:50;background:var(--bg);flex-direction:column;gap:10px;padding:12px;padding-top:calc(12px + env(safe-area-inset-top,0px))">
+<div class="row" style="justify-content:space-between"><b id="edt"></b><span class="row"><select id="edm"><option value="cover">Start: fill canvas</option><option value="fit">Start: fit whole design</option></select><button class="g" id="edf">Fit view</button><button class="g" id="edr">Reset</button><button class="g" id="edc">Cancel</button><button id="eda">Apply</button></span></div>
+<div style="flex:1;min-height:0;display:flex;gap:12px">
+<div id="edw" style="flex:1;min-width:0;position:relative;border:1px solid var(--bd);border-radius:10px;overflow:hidden"><canvas id="edv" style="position:absolute;left:0;top:0;touch-action:none;cursor:grab"></canvas></div>
+<div class="c" style="width:320px;max-width:40%;overflow:auto;margin:0">
+<p class="s" style="margin:0 0 8px">Bright frame = your banner. Dimmed art outside it is not exported. Drag a layer to move it, drag empty space to pan, scroll to zoom.</p>
+<h2>Layers</h2><div id="edl" style="max-height:240px;overflow:auto;margin-bottom:10px"></div>
+<label class="k">Size <input id="eds" type="range" min="5" max="500" value="100" disabled></label>
+<h2 style="margin-top:14px">Live preview (actual size)</h2><canvas id="edp" style="display:block;max-width:100%;border:1px solid var(--bd)"></canvas>
+</div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ag-psd@15.0.1/dist/bundle.js"></script>
 <script>
@@ -187,14 +192,32 @@ const BM={multiply:'multiply',screen:'screen',overlay:'overlay',darken:'darken',
 let E=null;
 function initT(mode){const L=E.f.lay,k=(mode==='fit'?Math.min:Math.max)(E.W/L.w,E.H/L.h),ox=(E.W-L.w*k)/2,oy=(E.H-L.h*k)/2;
   E.t=L.list.map(l=>({x:ox+l.left*k,y:oy+l.top*k,k,k0:k}));E.vis=L.list.map(()=>true)}
-function paint(x,outline,final){
-  x.fillStyle=$('bg').value;x.fillRect(0,0,E.W,E.H);x.imageSmoothingQuality='high';
+function layers(x,final){
+  x.imageSmoothingQuality='high';
   E.f.lay.list.forEach((l,i)=>{if(!E.vis[i])return;const t=E.t[i],w=l.cv.width*t.k,h=l.cv.height*t.k;if(w<1||h<1)return;
     x.globalAlpha=l.op;x.globalCompositeOperation=l.bm;x.drawImage(final?step(l.cv,Math.round(w),Math.round(h)):l.cv,t.x,t.y,w,h)});
   x.globalAlpha=1;x.globalCompositeOperation='source-over';
-  if(outline&&E.sel>=0&&E.vis[E.sel]){const l=E.f.lay.list[E.sel],t=E.t[E.sel];x.strokeStyle='#2f80ff';x.lineWidth=Math.max(1,E.W/300);x.setLineDash([6,4]);x.strokeRect(t.x,t.y,l.cv.width*t.k,l.cv.height*t.k);x.setLineDash([])}
 }
-function drawEd(){paint($('edv').getContext('2d'),true,false)}
+function flat(){const c=document.createElement('canvas');c.width=E.W;c.height=E.H;const x=c.getContext('2d');x.fillStyle=$('bg').value;x.fillRect(0,0,E.W,E.H);layers(x,true);return c}
+function sizeCv(){const w=$('edw'),c=$('edv');c.width=Math.max(300,w.clientWidth);c.height=Math.max(200,w.clientHeight)}
+function fitView(){
+  let a=0,b=0,c=E.W,d=E.H;
+  E.f.lay.list.forEach((l,i)=>{if(!E.vis[i])return;const t=E.t[i];a=Math.min(a,t.x);b=Math.min(b,t.y);c=Math.max(c,t.x+l.cv.width*t.k);d=Math.max(d,t.y+l.cv.height*t.k)});
+  const pad=Math.max(c-a,d-b)*0.05;a-=pad;b-=pad;c+=pad;d+=pad;
+  const cv=$('edv');E.vs=Math.min(cv.width/(c-a),cv.height/(d-b));E.vx=a-(cv.width/E.vs-(c-a))/2;E.vy=b-(cv.height/E.vs-(d-b))/2;
+}
+function drawEd(){
+  const cv=$('edv'),x=cv.getContext('2d'),s=E.vs,fx=-E.vx*s,fy=-E.vy*s,fw=E.W*s,fh=E.H*s;
+  x.setTransform(1,0,0,1,0,0);x.fillStyle='#23262b';x.fillRect(0,0,cv.width,cv.height);
+  x.setTransform(s,0,0,s,fx,fy);x.fillStyle=$('bg').value;x.fillRect(0,0,E.W,E.H);layers(x,false);
+  x.setTransform(1,0,0,1,0,0);
+  x.fillStyle='rgba(20,22,26,.62)';x.beginPath();x.rect(0,0,cv.width,cv.height);x.rect(fx,fy,fw,fh);x.fill('evenodd');
+  x.strokeStyle='#fff';x.lineWidth=2;x.strokeRect(fx,fy,fw,fh);
+  x.fillStyle='#fff';x.font='12px sans-serif';x.fillText(E.W+'\u00d7'+E.H+' banner',fx,Math.max(12,fy-6));
+  if(E.sel>=0&&E.vis[E.sel]){const l=E.f.lay.list[E.sel],t=E.t[E.sel];x.strokeStyle='#2f80ff';x.lineWidth=2;x.setLineDash([6,4]);
+    x.strokeRect((t.x-E.vx)*s,(t.y-E.vy)*s,l.cv.width*t.k*s,l.cv.height*t.k*s);x.setLineDash([])}
+  const px=$('edp').getContext('2d');px.clearRect(0,0,E.W,E.H);px.fillStyle=$('bg').value;px.fillRect(0,0,E.W,E.H);layers(px,false);
+}
 function syncSel(){
   const el=$('edl');el.innerHTML='';
   [...E.f.lay.list.keys()].reverse().forEach(i=>{const d=document.createElement('div'),cb=document.createElement('input');
@@ -209,24 +232,31 @@ function openEd(r){
     (function walk(a){for(const l of a||[]){if(l.hidden||/remove this layer/i.test(l.name||''))continue;if(l.children){walk(l.children);continue}
       if(l.canvas)list.push({name:l.name||'Layer',cv:l.canvas,left:l.left||0,top:l.top||0,op:l.opacity==null?1:l.opacity,bm:BM[l.blendMode]||'source-over'})}})(psd.children);
     f.lay={w:psd.width,h:psd.height,list}}}catch(e){return alert('Could not read layers: '+e.message)}
-  E={r,f,W:r.s.w,H:r.s.h,sel:-1,drag:null};
+  E={r,f,W:r.s.w,H:r.s.h,sel:-1,drag:null,pan:null};
   if(r.edit){E.t=r.edit.t.map(o=>({...o}));E.vis=[...r.edit.vis]}else initT('cover');
-  const c=$('edv');c.width=E.W;c.height=E.H;c.style.width=Math.min(640,E.W<400?E.W*2:E.W)+'px';
-  $('edt').textContent='Edit layers \u2014 '+r.name;$('edm').value='cover';$('ed').style.display='block';syncSel();drawEd();
+  const p=$('edp');p.width=E.W;p.height=E.H;p.style.width=Math.min(E.W,300)+'px';
+  $('edt').textContent='Edit layers \u2014 '+r.name;$('edm').value='cover';$('ed').style.display='flex';
+  sizeCv();fitView();syncSel();drawEd();
 }
-const pt=e=>{const b=$('edv').getBoundingClientRect();return{x:(e.clientX-b.left)*E.W/b.width,y:(e.clientY-b.top)*E.H/b.height}};
+const pt=e=>{const c=$('edv'),b=c.getBoundingClientRect(),sx=(e.clientX-b.left)*c.width/b.width,sy=(e.clientY-b.top)*c.height/b.height;return{x:sx/E.vs+E.vx,y:sy/E.vs+E.vy,sx,sy}};
 function hit(i,p){const l=E.f.lay.list[i],t=E.t[i],lx=Math.floor((p.x-t.x)/t.k),ly=Math.floor((p.y-t.y)/t.k);
   if(lx<0||ly<0||lx>=l.cv.width||ly>=l.cv.height)return false;return l.cv.getContext('2d').getImageData(lx,ly,1,1).data[3]>12}
 $('edv').onpointerdown=e=>{if(!E)return;const p=pt(e);let h=-1;for(let i=E.t.length-1;i>=0;i--){if(E.vis[i]&&hit(i,p)){h=i;break}}
-  E.sel=h;syncSel();drawEd();if(h>=0){E.drag=p;e.target.setPointerCapture(e.pointerId)}};
-$('edv').onpointermove=e=>{if(!E||!E.drag||E.sel<0)return;const p=pt(e),t=E.t[E.sel];t.x+=p.x-E.drag.x;t.y+=p.y-E.drag.y;E.drag=p;drawEd()};
-$('edv').onpointerup=$('edv').onpointercancel=()=>{if(E)E.drag=null};
+  E.sel=h;syncSel();e.target.setPointerCapture(e.pointerId);if(h>=0)E.drag=p;else E.pan={sx:p.sx,sy:p.sy};drawEd()};
+$('edv').onpointermove=e=>{if(!E)return;const p=pt(e);
+  if(E.drag&&E.sel>=0){const t=E.t[E.sel];t.x+=p.x-E.drag.x;t.y+=p.y-E.drag.y;E.drag=p;drawEd()}
+  else if(E.pan){E.vx-=(p.sx-E.pan.sx)/E.vs;E.vy-=(p.sy-E.pan.sy)/E.vs;E.pan={sx:p.sx,sy:p.sy};drawEd()}};
+$('edv').onpointerup=$('edv').onpointercancel=()=>{if(E)E.drag=E.pan=null};
+$('edv').addEventListener('wheel',e=>{if(!E)return;e.preventDefault();const p=pt(e),f=e.deltaY<0?1.15:1/1.15;E.vs*=f;E.vx=p.x-p.sx/E.vs;E.vy=p.y-p.sy/E.vs;drawEd()},{passive:false});
 $('eds').oninput=()=>{if(!E||E.sel<0)return;const l=E.f.lay.list[E.sel],t=E.t[E.sel],cx=t.x+l.cv.width*t.k/2,cy=t.y+l.cv.height*t.k/2;
   t.k=t.k0*$('eds').value/100;t.x=cx-l.cv.width*t.k/2;t.y=cy-l.cv.height*t.k/2;drawEd()};
-$('edm').onchange=$('edr').onclick=()=>{if(!E)return;initT($('edm').value);E.sel=-1;syncSel();drawEd()};
-$('edc').onclick=()=>{$('ed').style.display='none';E=null};
-$('eda').onclick=()=>{if(!E)return;const c=document.createElement('canvas');c.width=E.W;c.height=E.H;paint(c.getContext('2d'),false,true);
-  const r=E.r;r.lay=c;r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);$('ed').style.display='none';E=null};
+$('edm').onchange=$('edr').onclick=()=>{if(!E)return;initT($('edm').value);E.sel=-1;fitView();syncSel();drawEd()};
+$('edf').onclick=()=>{if(E){fitView();drawEd()}};
+const closeEd=()=>{$('ed').style.display='none';E=null};
+$('edc').onclick=closeEd;
+addEventListener('keydown',e=>{if(e.key==='Escape'&&E)closeEd()});
+addEventListener('resize',()=>{if(E){sizeCv();fitView();drawEd()}});
+$('eda').onclick=()=>{if(!E)return;const r=E.r;r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);closeEd()};
 function repaint(r){
   const n=r.lay||render(r.src,r.s.w,r.s.h,r.ov),c=r.cv.getContext('2d');c.clearRect(0,0,r.s.w,r.s.h);c.drawImage(n,0,0);
   clearTimeout(r.t);r.t=setTimeout(async()=>{const b=await blobOf(r);r.kb.textContent=(b.size/1024).toFixed(1)+' KB'},250);
