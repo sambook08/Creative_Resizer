@@ -266,7 +266,7 @@ const closeEd=()=>{$('ed').style.display='none';E=null};
 $('edc').onclick=closeEd;
 addEventListener('keydown',e=>{if(e.key==='Escape'&&E)closeEd()});
 addEventListener('resize',()=>{if(E){sizeCv();fitView();drawEd()}});
-/* ===== Auto-align v3 (heuristic layout planner; pure, no DOM) ===== */
+/* ===== Auto-align v4 (heuristic layout planner; pure, no DOM) ===== */
 const AA_HERO=/photo|person|people|woman|women|man\b|girl|boy|model|talent|hero|product|phone|mockup|device|character|face|portrait|image|picture/i;
 const AA_DECOR=/swirl|wave|ribbon|shape|decor|pattern|stroke|line|gradient|texture|overlay|glow|blob|curve|stripe|flow|confetti|sparkle/i;
 const AA_BG=/(^|[^a-z])(bg|background|backdrop)([^a-z]|$)/i;
@@ -278,6 +278,7 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
   for(const it of items){
     if(!it.bb){roles[it.i]='none';continue}
     const o=box(it),a=o.w*o.h,nm=it.name||'';let r=it.role&&it.role!=='auto'?it.role:null;
+    if(!r&&!it.txt&&it.soft)r='hide';           // blurred single-colour blobs (shadows/glows) look wrong once things move
     if(!r){
       const full=o.w>=dw*.9&&o.h>=dh*.9,namedBg=AA_BG.test(nm)&&o.w>=dw*.6&&o.h>=dh*.6;
       const solid=it.cov==null||it.cov>=0.92;
@@ -288,34 +289,24 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
     }
     roles[it.i]=r;if(r==='art')art.push(o);else if(r==='content')cont.push(o);
   }
-  // art layers: images that do not sit under the text are "hero" (go to the right), art that lies under the text is decor
+  // art layers: images that are not under the text are "hero" (go to the side), art lying under the text is decor
   const cArea=cont.reduce((s,c)=>s+c.w*c.h,0)||1;
-  const under=a=>cont.reduce((s,c)=>s+Math.max(0,Math.min(a.x1,c.x1)-Math.max(a.x0,c.x0))*Math.max(0,Math.min(a.y1,c.y1)-Math.max(a.y0,c.y0)),0)/cArea;
+  const underBox=a=>cont.reduce((s,c)=>s+Math.max(0,Math.min(a.x1,c.x1)-Math.max(a.x0,c.x0))*Math.max(0,Math.min(a.y1,c.y1)-Math.max(a.y0,c.y0)),0)/cArea;
+  const inkD=(it,dx,dy)=>{const m=it.mask;if(!m)return false;const lx=dx-it.left,ly=dy-it.top;
+    if(lx<0||ly<0||lx>=m.w||ly>=m.h)return false;return m.data[((ly/m.h*m.G)|0)*m.G+((lx/m.w*m.G)|0)]===1};
+  const under=a=>{if(!a.it.mask)return underBox(a);let hit=0;
+    for(const c of cont){let n=0;for(let i=0;i<5;i++)for(let j=0;j<5;j++)if(inkD(a.it,c.x0+(i+.5)*c.w/5,c.y0+(j+.5)*c.h/5))n++;hit+=c.w*c.h*n/25}
+    return hit/cArea};
   const heroes=[];
   for(const o of art){const nm=o.it.name||'';let h;
-    if(AA_DECOR.test(nm)&&!AA_HERO.test(nm))h=false;else if(AA_HERO.test(nm))h=true;else h=under(o)<0.25;
+    if(AA_DECOR.test(nm)&&!AA_HERO.test(nm))h=false;else if(AA_HERO.test(nm))h=true;else h=under(o)<0.2;
     roles[o.it.i]=h?'hero':'decor';if(h)heroes.push(o)}
   for(const it of items)if(it.role==='hero'&&it.bb&&!heroes.some(o=>o.it.i===it.i)){heroes.push(box(it));roles[it.i]='hero'}
   const bgIds=items.filter(it=>roles[it.i]==='bg').map(it=>it.i);
   const hidden=items.filter(it=>roles[it.i]==='hide'||(tightBn&&roles[it.i]==='decor')).map(it=>it.i);
   const moves=[];
   const mg=Math.max(2,Math.round(Math.min(W,H)*0.04)),gb=Math.max(2,Math.round(Math.min(W,H)*0.03)),cover=Math.max(W/dw,H/dh),sCap=cover*1.25;
-  // ---- 2) images: kept whole, flush to the right (wide banners) or to their original side / bottom (others)
-  let R={x:mg,y:mg,w:W-2*mg,h:H-2*mg},heroRect=null;
-  if(heroes.length){
-    const U={x0:1e9,y0:1e9,x1:-1e9,y1:-1e9};for(const o of heroes){U.x0=Math.min(U.x0,o.x0);U.y0=Math.min(U.y0,o.y0);U.x1=Math.max(U.x1,o.x1);U.y1=Math.max(U.y1,o.y1)}
-    const wl=U.x1-U.x0,hl=U.y1-U.y0,wide=W/H>=1.6,right=wide||(U.x0+U.x1)/2>=dw/2,low=(U.y0+U.y1)/2>=dh/2;
-    let s,X,Y;
-    if(wide){s=Math.min(H/hl,0.38*W/wl);X=W-wl*s;Y=hl*s>=H?0:H-hl*s}
-    else{const tall=H/W>=1.3;s=tall?Math.min(0.9*W/wl,0.42*H/hl):Math.min(0.45*W/wl,1.0*H/hl);
-      X=wl*s>0.8*W?(W-wl*s)/2:(right?W-wl*s:0);Y=low?H-hl*s:0}
-    for(const o of heroes)moves.push({i:o.it.i,x:X+(o.it.left-U.x0)*s,y:Y+(o.it.top-U.y0)*s,k:s});
-    const hw=wl*s,hh=hl*s;heroRect={x:X,y:Y,w:hw,h:hh};
-    if(hw>=0.55*W){if(Y+hh/2>H/2){R.h=Math.max(8,Y-gb-R.y)}else{const ny=Math.min(H-8,Y+hh+gb);R.h=R.y+R.h-ny;R.y=ny}}
-    else if(X+hw/2>=W/2){R.w=Math.max(8,X-gb-R.x)}else{const nx=Math.min(W-8,X+hw+gb);R.w=R.x+R.w-nx;R.x=nx}
-  }
-  if(!cont.length)return{moves,bg:bgIds,hidden,roles,s:0,layout:'images only',info:'Only background and image layers found, nothing to arrange'};
-  // ---- 3) group nearby/overlapping content layers into blocks
+  // ---- 2) group nearby/overlapping content layers into blocks (headline lines, pill, button...)
   const build=Gf=>{
     const par=cont.map((_,i)=>i),find=i=>par[i]===i?i:(par[i]=find(par[i])),G=Gf*Math.min(dw,dh);
     for(let i=0;i<cont.length;i++)for(let j=i+1;j<cont.length;j++){const a=cont[i],b=cont[j];
@@ -328,6 +319,22 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
       c.key=!c.legal&&/logo|cta|button|btn|head|title|offer/i.test(nm);return c});
   };
   let gf=0.02,all=build(gf);while(all.length>11&&gf<0.2){gf*=1.4;all=build(gf)}
+  // ---- 3) images: kept whole; flush right on wide banners, else on their original side / bottom.
+  let R={x:mg,y:mg,w:W-2*mg,h:H-2*mg},heroRect=null,heroMoves=[];
+  const U={x0:1e9,y0:1e9,x1:-1e9,y1:-1e9};
+  for(const o of heroes){U.x0=Math.min(U.x0,o.x0);U.y0=Math.min(U.y0,o.y0);U.x1=Math.max(U.x1,o.x1);U.y1=Math.max(U.y1,o.y1)}
+  const heroPlan=f=>{
+    const wl=U.x1-U.x0,hl=U.y1-U.y0,wide=W/H>=1.6,tall=H/W>=1.3,low=(U.y0+U.y1)/2>=dh/2,right=wide||(U.x0+U.x1)/2>=dw/2;
+    let s,X,Y;
+    if(wide){s=Math.min(H/hl,0.38*W/wl);X=W-wl*s;Y=hl*s>=H?0:H-hl*s}
+    else{s=tall?Math.min(0.9*W/wl,f*H/hl):Math.min(f*W/wl,1.0*H/hl);
+      X=wl*s>0.8*W?(W-wl*s)/2:(right?W-wl*s:0);Y=low?H-hl*s:0}
+    const hw=wl*s,hh=hl*s,Rn={x:mg,y:mg,w:W-2*mg,h:H-2*mg};
+    if(hw>=0.55*W){if(Y+hh/2>H/2){Rn.h=Math.max(8,Y-gb-Rn.y)}else{const ny=Math.min(H-8,Y+hh+gb);Rn.h=Rn.y+Rn.h-ny;Rn.y=ny}}
+    else if(X+hw/2>=W/2){Rn.w=Math.max(8,X-gb-Rn.x)}else{const nx=Math.min(W-8,X+hw+gb);Rn.w=Rn.x+Rn.w-nx;Rn.x=nx}
+    return{R:Rn,rect:{x:X,y:Y,w:hw,h:hh},moves:heroes.map(o=>({i:o.it.i,x:X+(o.it.left-U.x0)*s,y:Y+(o.it.top-U.y0)*s,k:s}))};
+  };
+  const apply=h=>{R=h.R;heroRect=h.rect;heroMoves=h.moves};
   const clash=P=>{for(let i=0;i<P.length;i++)for(let j=i+1;j<P.length;j++){const a=P[i],b=P[j];
     if(a.x-gb<b.x+b.w&&a.x+a.w+gb>b.x&&a.y-gb<b.y+b.h&&a.y+a.h+gb>b.y)return true}return false};
   function layout(C){
@@ -364,7 +371,16 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
       for(const k of [g1,g2])if(k&&(!best||k.s>best.s*(best===p?1.15:1)))best=k}
     return best||grid(false)||grid(true);
   }
-  let C=all.slice(),best=layout(C);
+  if(!cont.length){if(heroes.length)apply(heroPlan(.4));moves.push(...heroMoves);
+    return{moves,bg:bgIds,hidden,roles,s:0,layout:'images only',info:'Only background and image layers found, nothing to arrange'}}
+  // try several image sizes (non-wide banners) and keep the one with the best balance of image size and text size
+  let C=all.slice(),best=null;
+  if(heroes.length){
+    const wide=W/H>=1.6,tall=H/W>=1.3,fs=wide?[0]:tall?[.26,.32,.38,.44,.50]:[.30,.36,.42,.48,.54,.60],tries=[];
+    for(const f of fs){const h=heroPlan(f);R=h.R;const L=layout(C);if(L)tries.push({h,L})}
+    if(tries.length){const sc=t=>t.L.s*Math.pow(Math.max(1,t.h.rect.w),0.7);let pick=tries[0];for(const t of tries)if(sc(t)>sc(pick))pick=t;apply(pick.h);best=pick.L}
+    else{apply(heroPlan(.3));best=layout(C)}
+  }else best=layout(C);
   // ---- 4) optional: too small to read? hide the least important blocks while it clearly helps
   if(hideMinor&&best){
     const target=cover*0.6;
@@ -376,38 +392,44 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
       C=C.filter(x=>x!==pick.c);best=pick.L;for(const f of pick.c.m)hidden.push(f.it.i);
     }
   }
+  moves.push(...heroMoves);
   if(!best)return{info:'Could not fit the elements.',moves,bg:bgIds,hidden,roles};
   // ---- 5) decor (swirls etc.) that would end up behind the text is removed
-  const ox=(W-dw*cover)/2,oy=(H-dh*cover)/2;let nDecor=0;
+  const ox=(W-dw*cover)/2,oy=(H-dh*cover)/2;
   const inkAt=(it,px,py)=>{const m=it.mask;if(!m)return false;const lx=(px-ox)/cover-it.left,ly=(py-oy)/cover-it.top;
     if(lx<0||ly<0||lx>=m.w||ly>=m.h)return false;return m.data[((ly/m.h*m.G)|0)*m.G+((lx/m.w*m.G)|0)]===1};
   for(const it of items){
     if(roles[it.i]!=='decor'||hidden.includes(it.i)||it.role==='decor')continue;
     let hit=false;
     for(const p of best.P){let n=0;for(let a=0;a<6;a++)for(let b=0;b<6;b++)if(inkAt(it,p.x+(a+.5)*p.w/6,p.y+(b+.5)*p.h/6))n++;if(n/36>=0.12){hit=true;break}}
-    if(hit){hidden.push(it.i);nDecor++}
+    if(hit)hidden.push(it.i);
   }
   C.forEach((c,ci)=>{const p=best.P[ci];for(const f of c.m)moves.push({i:f.it.i,x:p.x+(f.it.left-c.x0)*best.s,y:p.y+(f.it.top-c.y0)*best.s,k:best.s})});
-  const nHid=hidden.length,nImg=heroes.length;
+  const nHid=hidden.length,nImg=heroes.length,nm3=a=>a.slice(0,3).join(', ')+(a.length>3?'\u2026':'');
+  const hidNames=nm3(hidden.map(i=>(items[i].name||'Layer')+'')),imgNames=nm3(heroes.map(o=>o.it.name||'Layer'));
   return{moves,bg:bgIds,hidden,roles,s:best.s,layout:best.name,groups:C.length,rects:best.P,heroRect,
-    info:`Layout: ${best.name}${nImg?' + '+nImg+' image'+(nImg>1?'s':'')+' on the '+(heroRect&&heroRect.x+heroRect.w/2>=W/2?'right':'left'):''} \u00b7 ${C.length} block${C.length>1?'s':''}${nHid?' \u00b7 hid '+nHid+' layer'+(nHid>1?'s':'')+' (decor/behind text)':''}`};
+    info:`Layout: ${best.name}${nImg?' + image on the '+(heroRect&&heroRect.x+heroRect.w/2>=W/2?'right':'left')+' ('+imgNames+')':' \u00b7 no image layer found'} \u00b7 ${C.length} block${C.length>1?'s':''}${nHid?' \u00b7 hid: '+hidNames:''}`};
 }
 
-function tight(l){ // box of the visible pixels + how solid the layer is + a coarse ink map (used to spot art lying under text)
+function tight(l){ // box of the visible pixels + how solid the layer is + a coarse ink map + is it a soft single-colour blob (shadow/glow)
   if(l.bb!==undefined)return l.bb;
   const c=l.cv,w=c.width,h=c.height;let d;
   try{d=c.getContext('2d').getImageData(0,0,w,h).data}catch(e){l.cov=null;return l.bb=null}
-  const G=32,cnt=new Uint32Array(G*G);let x0=w,y0=h,x1=-1,y1=-1,op=0;
+  const G=32,cnt=new Uint32Array(G*G);let x0=w,y0=h,x1=-1,y1=-1,op=0,ink=0,semi=0,ns=0,sr=0,sg=0,sb=0,qr=0,qg=0,qb=0;
   for(let y=0;y<h;y++){const row=y*w*4+3,gy=Math.min(G-1,(y*G/h)|0)*G;
-    for(let x=0;x<w;x++){const a=d[row+x*4];if(a>12){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;y1=y;if(a>=200){op++;cnt[gy+Math.min(G-1,(x*G/w)|0)]++}}}}
-  if(x1<0){l.cov=0;return l.bb=null}
+    for(let x=0;x<w;x++){const a=d[row+x*4];if(a>12){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;y1=y;ink++;
+      if(a>=200){op++;cnt[gy+Math.min(G-1,(x*G/w)|0)]++}if(a<230)semi++;
+      if((ink&7)===0){const o=row-3+x*4,r=d[o],g=d[o+1],b=d[o+2];ns++;sr+=r;sg+=g;sb+=b;qr+=r*r;qg+=g*g;qb+=b*b}}}}
+  if(x1<0){l.cov=0;l.soft=false;return l.bb=null}
   const cell=(w/G)*(h/G),mask=new Uint8Array(G*G);for(let i=0;i<G*G;i++)mask[i]=cnt[i]>=cell*0.25?1:0;
   l.mask={G,data:mask,w,h};l.cov=op/((x1+1-x0)*(y1+1-y0));
+  const sd=ns>1?Math.sqrt(Math.max(0,qr/ns-(sr/ns)**2)+Math.max(0,qg/ns-(sg/ns)**2)+Math.max(0,qb/ns-(sb/ns)**2)):99;
+  l.soft=ink>200&&semi/ink>=0.35&&sd<35;   // mostly semi-transparent AND one colour = blurred shadow / glow
   return l.bb={x0,y0,x1:x1+1,y1:y1+1};
 }
-const ROLE_LBL={bg:'background',decor:'decor',hero:'hero image',content:'content',none:'empty'};
+const ROLE_LBL={bg:'background',decor:'decor',hero:'hero image',content:'content',hide:'hidden',none:'empty'};
 function alignE(mode,hide){ // plans a layout for the layers in E and writes it into E.t / E.vis
-  const L=E.f.lay,items=L.list.map((l,i)=>{const bb=tight(l);return{i,name:l.name,txt:l.txt,role:l.role,left:l.left,top:l.top,bb,cov:l.cov,mask:l.mask}});
+  const L=E.f.lay,items=L.list.map((l,i)=>{const bb=tight(l);return{i,name:l.name,txt:l.txt,role:l.role,left:l.left,top:l.top,bb,cov:l.cov,mask:l.mask,soft:l.soft}});
   const p=planAlign(items,L.w,L.h,E.W,E.H,mode,hide);
   initT('cover');
   for(const m of p.moves){const t=E.t[m.i];t.x=m.x;t.y=m.y;t.k=m.k}
