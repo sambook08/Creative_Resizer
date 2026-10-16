@@ -62,7 +62,7 @@ button:disabled{opacity:.5;cursor:default}
 
 <div class="row" style="margin-bottom:14px"><button id="go" disabled>Generate</button>
 <button id="zip" class="g" disabled>Download all (ZIP)</button>
-<button id="aa" class="g" disabled title="Auto-align the layers of every PSD result">Auto-align all PSD sizes</button><label class="k"><input type="checkbox" id="aah" checked> Hide what doesn't fit</label><span id="st"></span></div>
+<label class="k" title="Used by the Auto-align button on each size"><input type="checkbox" id="aah" checked> Auto-align: hide what doesn't fit</label><span id="st"></span></div>
 <div id="out"></div>
 </div>
 <div id="ed" style="display:none;position:fixed;inset:0;z-index:50;background:var(--bg);flex-direction:column;gap:10px;padding:12px;padding-top:calc(12px + env(safe-area-inset-top,0px))">
@@ -344,17 +344,17 @@ function alignE(mode,hide){ // plans a layout for the layers in E and writes it 
 }
 $('eaa').onclick=()=>{if(!E)return;const p=alignE($('edam').value,$('edhm').checked);
   $('edn').textContent=p.info+'. Drag any layer to fine-tune, or press Reset to undo.';E.sel=-1;fitView();syncSel();drawEd()};
-$('aa').onclick=async()=>{
-  const hide=$('aah').checked;let n=0,hid=0;$('aa').disabled=true;
-  for(const r of results){
-    if(!r.file.buf||!ensureLay(r.file))continue;
-    $('st').textContent=`Auto-aligning ${r.name}\u2026`;await new Promise(z=>setTimeout(z));
+function autoOne(r){ // auto-align one size without opening the editor
+  if(E||!r.file.buf||!ensureLay(r.file))return;
+  $('st').textContent=`Auto-aligning ${r.s.w}\u00d7${r.s.h}\u2026`;
+  setTimeout(()=>{
     E={r,f:r.file,W:r.s.w,H:r.s.h,sel:-1,drag:null,pan:null};
-    try{const p=alignE('auto',hide);r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);n++;hid+=p.hidden.length}
-    catch(e){console.error(e)}finally{E=null}
-  }
-  $('aa').disabled=false;$('st').textContent=n?`Auto-aligned ${n} size${n>1?'s':''}${hid?' (hid '+hid+' layer'+(hid>1?'s':'')+' that did not fit)':''}. Open Edit layers on any size to fine-tune.`:'No PSD layers to align.';
-};
+    try{const p=alignE('auto',$('aah').checked);r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);
+      $('st').textContent=`${r.s.w}\u00d7${r.s.h} auto-aligned. ${p.info}. Click Edit layers to fine-tune, or Reset to undo.`}
+    catch(e){console.error(e);$('st').textContent='Auto-align failed: '+e.message}
+    finally{E=null}
+  },30);
+}
 $('eda').onclick=()=>{if(!E)return;const r=E.r;r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);closeEd()};
 function repaint(r){
   const n=r.lay||render(r.src,r.s.w,r.s.h,r.ov),c=r.cv.getContext('2d');c.clearRect(0,0,r.s.w,r.s.h);c.drawImage(n,0,0);
@@ -367,7 +367,7 @@ function initOv(r){ // starting point that matches the auto result
 }
 $('go').onclick=async()=>{
   const act=sizes.filter(s=>s.on);if(!act.length)return alert('Select at least one size');
-  $('out').innerHTML='';results=[];$('go').disabled=true;$('aa').disabled=true;
+  $('out').innerHTML='';results=[];$('go').disabled=true;
   const fmt=$('fmt').value,ext=fmt==='png'?'png':'jpg',q=Math.min(100,Math.max(40,+$('q').value||90))/100;
   for(const f of files){
     const h=document.createElement('div');h.className='f';h.textContent=f.name;$('out').appendChild(h);
@@ -379,7 +379,7 @@ $('go').onclick=async()=>{
       cv.style.cssText=`display:block;max-width:100%;height:auto;width:${s.w>=420?420:Math.round(s.w*1.3)}px;border:1px solid var(--bd);cursor:grab;touch-action:none`;
       const d=document.createElement('div');d.className='o';d.appendChild(cv);
       const m=document.createElement('div');m.className='m';
-      m.innerHTML=`<span>${s.w}×${s.h} · <b class="kb"></b></span><input type="range" min="10" max="300" value="${Math.round(initOv(r).z*100)}" style="width:80px" title="Zoom">${f.buf?'<button class="g ed">Edit layers</button>':''}<button class="g rs">Reset</button><button class="g sv">Save</button>`;
+      m.innerHTML=`<span>${s.w}×${s.h} · <b class="kb"></b></span><input type="range" min="10" max="300" value="${Math.round(initOv(r).z*100)}" style="width:80px" title="Zoom">${f.buf?'<button class="g ed">Edit layers</button><button class=\"g aal\" title=\"Auto-arrange this size\">Auto-align</button>':''}<button class="g rs">Reset</button><button class="g sv">Save</button>`;
       d.appendChild(m);g.appendChild(d);
       r.kb=m.querySelector('.kb');const sl=m.querySelector('input');
       blobOf(r).then(b=>r.kb.textContent=(b.size/1024).toFixed(1)+' KB');
@@ -387,13 +387,14 @@ $('go').onclick=async()=>{
       m.querySelector('.rs').onclick=()=>{r.ov=null;r.lay=null;r.edit=null;sl.value=Math.round(initOv(r).z*100);repaint(r)};
       m.querySelector('.sv').onclick=async()=>{const b=await blobOf(r),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=r.name;a.click()};
       const eb=m.querySelector('.ed');if(eb)eb.onclick=()=>openEd(r);
+      const ab=m.querySelector('.aal');if(ab)ab.onclick=()=>autoOne(r);
       let st=null;
       cv.onpointerdown=e=>{if(r.lay)return;cv.setPointerCapture(e.pointerId);if(!r.ov)r.ov=initOv(r);st={x:e.clientX,y:e.clientY}};
       cv.onpointermove=e=>{if(!st)return;const k=s.w/cv.getBoundingClientRect().width;r.ov.x+=(e.clientX-st.x)*k/s.w;r.ov.y+=(e.clientY-st.y)*k/s.h;st={x:e.clientX,y:e.clientY};repaint(r)};
       cv.onpointerup=cv.onpointercancel=()=>{st=null};
     }
   }
-  $('st').textContent=`Done — ${results.length} images. Drag any preview to reposition it; use its slider to zoom.`;$('go').disabled=false;$('zip').disabled=false;$('aa').disabled=!results.some(r=>r.file.buf);
+  $('st').textContent=`Done — ${results.length} images. Drag any preview to reposition it; use its slider to zoom.`;$('go').disabled=false;$('zip').disabled=false;
 };
 $('zip').onclick=async()=>{
   if(typeof JSZip==='undefined')return alert('ZIP library failed to load');
