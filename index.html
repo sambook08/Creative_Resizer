@@ -197,7 +197,12 @@ function initT(mode){const L=E.f.lay,k=(mode==='fit'?Math.min:Math.max)(E.W/L.w,
 function layers(x,final){
   x.imageSmoothingQuality='high';
   E.f.lay.list.forEach((l,i)=>{if(!E.vis[i])return;const t=E.t[i],w=l.cv.width*t.k,h=l.cv.height*t.k;if(w<1||h<1)return;
-    x.globalAlpha=l.op;x.globalCompositeOperation=l.bm;x.drawImage(final?step(l.cv,Math.round(w),Math.round(h)):l.cv,t.x,t.y,w,h)});
+    x.globalAlpha=l.op;x.globalCompositeOperation=l.bm;
+    if(!final){x.drawImage(l.cv,t.x,t.y,w,h);return}
+    // export: snap to whole pixels and resample only once, so text and edges stay crisp (no half-pixel blur)
+    const iw=Math.max(1,Math.round(w)),ih=Math.max(1,Math.round(h)),s=step(l.cv,iw,ih);let src=s;
+    if(s.width!==iw||s.height!==ih){const q=document.createElement('canvas');q.width=iw;q.height=ih;const qc=q.getContext('2d');qc.imageSmoothingQuality='high';qc.drawImage(s,0,0,iw,ih);src=q}
+    x.drawImage(src,Math.round(t.x),Math.round(t.y))});
   x.globalAlpha=1;x.globalCompositeOperation='source-over';
 }
 function flat(){const c=document.createElement('canvas');c.width=E.W;c.height=E.H;const x=c.getContext('2d');x.fillStyle=$('bg').value;x.fillRect(0,0,E.W,E.H);layers(x,true);return c}
