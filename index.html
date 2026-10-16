@@ -61,15 +61,17 @@ button:disabled{opacity:.5;cursor:default}
 <label class="k">Crop position left <input id="tx" type="range" min="0" max="100" value="50"> right</label></div></div>
 
 <div class="row" style="margin-bottom:14px"><button id="go" disabled>Generate</button>
-<button id="zip" class="g" disabled>Download all (ZIP)</button><span id="st"></span></div>
+<button id="zip" class="g" disabled>Download all (ZIP)</button>
+<button id="aa" class="g" disabled title="Auto-align the layers of every PSD result">Auto-align all PSD sizes</button><label class="k"><input type="checkbox" id="aah" checked> Hide what doesn't fit</label><span id="st"></span></div>
 <div id="out"></div>
 </div>
 <div id="ed" style="display:none;position:fixed;inset:0;z-index:50;background:var(--bg);flex-direction:column;gap:10px;padding:12px;padding-top:calc(12px + env(safe-area-inset-top,0px))">
-<div class="row" style="justify-content:space-between"><b id="edt"></b><span class="row"><select id="edm"><option value="cover">Start: fill canvas</option><option value="fit">Start: fit whole design</option></select><button class="g" id="edf">Fit view</button><button class="g" id="edr">Reset</button><button class="g" id="edc">Cancel</button><button id="eda">Apply</button></span></div>
+<div class="row" style="justify-content:space-between"><b id="edt"></b><span class="row"><select id="edm"><option value="cover">Start: fill canvas</option><option value="fit">Start: fit whole design</option></select><select id="edam" title="How Auto-align arranges the elements"><option value="auto">Auto layout (best)</option><option value="prop">Keep my arrangement</option><option value="row">One row</option><option value="col">One column</option></select><label class="k"><input type="checkbox" id="edhm" checked> Hide what doesn't fit</label><button class="g" id="eaa">Auto-align</button><button class="g" id="edf">Fit view</button><button class="g" id="edr">Reset</button><button class="g" id="edc">Cancel</button><button id="eda">Apply</button></span></div>
 <div style="flex:1;min-height:0;display:flex;gap:12px">
 <div id="edw" style="flex:1;min-width:0;position:relative;border:1px solid var(--bd);border-radius:10px;overflow:hidden"><canvas id="edv" style="position:absolute;left:0;top:0;touch-action:none;cursor:grab"></canvas></div>
 <div class="c" style="width:320px;max-width:40%;overflow:auto;margin:0">
 <p class="s" style="margin:0 0 8px">Bright frame = your banner. Dimmed art outside it is not exported. Drag a layer to move it, drag empty space to pan, scroll to zoom.</p>
+<p class="s" id="edn" style="margin:0 0 8px"></p>
 <h2>Layers</h2><div id="edl" style="max-height:240px;overflow:auto;margin-bottom:10px"></div>
 <label class="k">Size <input id="eds" type="range" min="5" max="500" value="100" disabled></label>
 <h2 style="margin-top:14px">Live preview (actual size)</h2><canvas id="edp" style="display:block;max-width:100%;border:1px solid var(--bd)"></canvas>
@@ -226,16 +228,18 @@ function syncSel(){
     d.append(cb,document.createTextNode(E.f.lay.list[i].name));d.onclick=()=>{E.sel=i;syncSel();drawEd()};el.appendChild(d)});
   $('eds').disabled=E.sel<0;if(E.sel>=0){const t=E.t[E.sel];$('eds').value=Math.round(t.k/t.k0*100)}
 }
-function openEd(r){
-  const f=r.file;
+function ensureLay(f){
   try{if(!f.lay){const psd=agPsd.readPsd(f.buf,{skipThumbnail:true}),list=[];
     (function walk(a){for(const l of a||[]){if(l.hidden||/remove this layer/i.test(l.name||''))continue;if(l.children){walk(l.children);continue}
       if(l.canvas)list.push({name:l.name||'Layer',cv:l.canvas,left:l.left||0,top:l.top||0,op:l.opacity==null?1:l.opacity,bm:BM[l.blendMode]||'source-over'})}})(psd.children);
-    f.lay={w:psd.width,h:psd.height,list}}}catch(e){return alert('Could not read layers: '+e.message)}
+    f.lay={w:psd.width,h:psd.height,list}}return true}catch(e){alert('Could not read layers: '+e.message);return false}
+}
+function openEd(r){
+  const f=r.file;if(!ensureLay(f))return;
   E={r,f,W:r.s.w,H:r.s.h,sel:-1,drag:null,pan:null};
   if(r.edit){E.t=r.edit.t.map(o=>({...o}));E.vis=[...r.edit.vis]}else initT('cover');
   const p=$('edp');p.width=E.W;p.height=E.H;p.style.width=Math.min(E.W,300)+'px';
-  $('edt').textContent='Edit layers \u2014 '+r.name;$('edm').value='cover';$('ed').style.display='flex';
+  $('edn').textContent='';$('edt').textContent='Edit layers \u2014 '+r.name;$('edm').value='cover';$('ed').style.display='flex';
   sizeCv();fitView();syncSel();drawEd();
 }
 const pt=e=>{const c=$('edv'),b=c.getBoundingClientRect(),sx=(e.clientX-b.left)*c.width/b.width,sy=(e.clientY-b.top)*c.height/b.height;return{x:sx/E.vs+E.vx,y:sy/E.vs+E.vy,sx,sy}};
@@ -256,6 +260,101 @@ const closeEd=()=>{$('ed').style.display='none';E=null};
 $('edc').onclick=closeEd;
 addEventListener('keydown',e=>{if(e.key==='Escape'&&E)closeEd()});
 addEventListener('resize',()=>{if(E){sizeCv();fitView();drawEd()}});
+/* ===== Auto-align (heuristic layout planner; pure, no DOM) ===== */
+function planAlign(items,dw,dh,W,H,mode,hideMinor){
+  const bg=[],fg=[],area=dw*dh;
+  for(const it of items){
+    if(!it.bb)continue;
+    const w=it.bb.x1-it.bb.x0,h=it.bb.y1-it.bb.y0;
+    const full=w>=dw*.9&&h>=dh*.9,big=w*h>=area*.6;
+    const named=/(^|[^a-z])(bg|background|backdrop)([^a-z]|$)/i.test(it.name||'')&&w>=dw*.6&&h>=dh*.6;
+    if(full||big||named){bg.push(it);continue}
+    fg.push({it,x0:it.left+it.bb.x0,y0:it.top+it.bb.y0,x1:it.left+it.bb.x1,y1:it.top+it.bb.y1});
+  }
+  const bgIds=bg.map(b=>b.i);
+  if(!fg.length)return{info:'No separate foreground elements found (everything looks like background).',moves:[],bg:bgIds,hidden:[]};
+  // 1) group layers that overlap or sit close together (headline lines, phone + UI chips...) so each group moves as one block
+  const G=0.03*Math.min(dw,dh),par=fg.map((_,i)=>i),find=i=>par[i]===i?i:(par[i]=find(par[i]));
+  for(let i=0;i<fg.length;i++)for(let j=i+1;j<fg.length;j++){const a=fg[i],b=fg[j];
+    if(a.x0-G<b.x1&&a.x1+G>b.x0&&a.y0-G<b.y1&&a.y1+G>b.y0)par[find(i)]=find(j)}
+  const map=new Map();fg.forEach((f,i)=>{const r=find(i);if(!map.has(r))map.set(r,[]);map.get(r).push(f)});
+  const all=[...map.values()].map(m=>{const c={m,x0:1e9,y0:1e9,x1:-1e9,y1:-1e9};
+    for(const f of m){c.x0=Math.min(c.x0,f.x0);c.y0=Math.min(c.y0,f.y0);c.x1=Math.max(c.x1,f.x1);c.y1=Math.max(c.y1,f.y1)}
+    c.w=c.x1-c.x0;c.h=c.y1-c.y0;
+    const nm=m.map(f=>f.it.name||'').join(' ');
+    c.legal=/legal|disclaim|tnc|t&c|terms|fine ?print|footer|\bsource\b/i.test(nm);
+    c.key=!c.legal&&/logo|cta|button|btn|head|title/i.test(nm);return c});
+  const mg=Math.max(2,Math.round(Math.min(W,H)*0.04)),gb=Math.max(2,Math.round(Math.min(W,H)*0.03)),cover=Math.max(W/dw,H/dh);
+  const clash=P=>{for(let i=0;i<P.length;i++)for(let j=i+1;j<P.length;j++){const a=P[i],b=P[j];
+    if(a.x-gb<b.x+b.w&&a.x+a.w+gb>b.x&&a.y-gb<b.y+b.h&&a.y+a.h+gb>b.y)return true}return false};
+  function layout(C){
+    let sCap=cover;for(const c of C)sCap=Math.min(sCap,(W-2*mg)/c.w,(H-2*mg)/c.h);
+    // A) keep the original arrangement: each block keeps its relative position; shrink until nothing collides
+    const prop=()=>{for(let s=sCap;s>sCap*0.04;s*=0.97){
+      const P=C.map(c=>{const w=c.w*s,h=c.h*s,fx=dw>c.w?c.x0/(dw-c.w):.5,fy=dh>c.h?c.y0/(dh-c.h):.5;
+        return{x:mg+Math.min(1,Math.max(0,fx))*(W-2*mg-w),y:mg+Math.min(1,Math.max(0,fy))*(H-2*mg-h),w,h}});
+      if(!clash(P))return{s,P,name:'keep arrangement'}}return null};
+    // B) re-flow: one row (left to right) or one column (top to bottom), spaced evenly
+    const flow=row=>{const idx=C.map((_,i)=>i).sort((a,b)=>row?(C[a].x0+C[a].x1)-(C[b].x0+C[b].x1):(C[a].y0+C[a].y1)-(C[b].y0+C[b].y1));
+      const n=C.length,sum=C.reduce((a,c)=>a+(row?c.w:c.h),0),cross=Math.max(...C.map(c=>row?c.h:c.w)),L=row?W:H,X=row?H:W;
+      const s=Math.min(sCap,(L-2*mg-gb*(n-1))/sum,(X-2*mg)/cross);if(!(s>0))return null;
+      const gap=(L-2*mg-sum*s)/(n+1),P=new Array(n);let pos=mg+gap;
+      for(const i of idx){const c=C[i],w=c.w*s,h=c.h*s;P[i]=row?{x:pos,y:(H-h)/2,w,h}:{x:(W-w)/2,y:pos,w,h};pos+=(row?w:h)+gap}
+      return{s,P,name:row?'one row':'one column'}};
+    let best=null;
+    if(mode==='prop')best=prop();else if(mode==='row')best=flow(true);else if(mode==='col')best=flow(false);
+    else{const p=prop(),r=flow(true),c=flow(false);best=p;
+      for(const k of [r,c])if(k&&(!best||k.s>best.s*(best===p?1.25:1)))best=k}
+    return best||flow(true)||flow(false);
+  }
+  let C=all.slice(),best=layout(C),hidden=[];
+  // 2) too small to read? hide the least important blocks, but only while it clearly helps
+  if(hideMinor&&best){
+    const target=cover*0.5;
+    while(best.s<target&&C.length>2){
+      const cand=C.filter(c=>!c.key);if(!cand.length)break;
+      let pick=null;
+      for(const c of cand){const L=layout(C.filter(x=>x!==c));if(L&&L.s>best.s*1.12&&(!pick||L.s>pick.L.s*1.02||(c.legal&&!pick.c.legal)))pick={c,L}}
+      if(!pick)break;
+      C=C.filter(x=>x!==pick.c);best=pick.L;for(const f of pick.c.m)hidden.push(f.it.i);
+    }
+  }
+  if(!best)return{info:'Could not fit the elements.',moves:[],bg:bgIds,hidden:[]};
+  const moves=[];
+  C.forEach((c,ci)=>{const p=best.P[ci];for(const f of c.m)moves.push({i:f.it.i,x:p.x+(f.it.left-c.x0)*best.s,y:p.y+(f.it.top-c.y0)*best.s,k:best.s})});
+  return{moves,bg:bgIds,hidden,s:best.s,layout:best.name,groups:C.length,rects:best.P,
+    info:`Layout: ${best.name} \u00b7 ${C.length} element group${C.length>1?'s':''}${hidden.length?' \u00b7 hid '+hidden.length+' layer'+(hidden.length>1?'s':'')+' that did not fit':''}`};
+}
+
+function tight(l){ // box of the visible (non-transparent) pixels inside a layer canvas
+  if(l.bb!==undefined)return l.bb;
+  const c=l.cv,w=c.width,h=c.height;let d;
+  try{d=c.getContext('2d').getImageData(0,0,w,h).data}catch(e){return l.bb=null}
+  let x0=w,y0=h,x1=-1,y1=-1;
+  for(let y=0;y<h;y++){const o=y*w*4+3;for(let x=0;x<w;x++){if(d[o+x*4]>12){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;y1=y}}}
+  return l.bb=x1<0?null:{x0,y0,x1:x1+1,y1:y1+1};
+}
+function alignE(mode,hide){ // plans a layout for the layers in E and writes it into E.t / E.vis
+  const L=E.f.lay,items=L.list.map((l,i)=>({i,name:l.name,left:l.left,top:l.top,bb:tight(l)}));
+  const p=planAlign(items,L.w,L.h,E.W,E.H,mode,hide);
+  initT('cover');
+  for(const m of p.moves){const t=E.t[m.i];t.x=m.x;t.y=m.y;t.k=m.k}
+  for(const i of p.hidden)E.vis[i]=false;
+  return p;
+}
+$('eaa').onclick=()=>{if(!E)return;const p=alignE($('edam').value,$('edhm').checked);
+  $('edn').textContent=p.info+'. Drag any layer to fine-tune, or press Reset to undo.';E.sel=-1;fitView();syncSel();drawEd()};
+$('aa').onclick=async()=>{
+  const hide=$('aah').checked;let n=0,hid=0;$('aa').disabled=true;
+  for(const r of results){
+    if(!r.file.buf||!ensureLay(r.file))continue;
+    $('st').textContent=`Auto-aligning ${r.name}\u2026`;await new Promise(z=>setTimeout(z));
+    E={r,f:r.file,W:r.s.w,H:r.s.h,sel:-1,drag:null,pan:null};
+    try{const p=alignE('auto',hide);r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);n++;hid+=p.hidden.length}
+    catch(e){console.error(e)}finally{E=null}
+  }
+  $('aa').disabled=false;$('st').textContent=n?`Auto-aligned ${n} size${n>1?'s':''}${hid?' (hid '+hid+' layer'+(hid>1?'s':'')+' that did not fit)':''}. Open Edit layers on any size to fine-tune.`:'No PSD layers to align.';
+};
 $('eda').onclick=()=>{if(!E)return;const r=E.r;r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);closeEd()};
 function repaint(r){
   const n=r.lay||render(r.src,r.s.w,r.s.h,r.ov),c=r.cv.getContext('2d');c.clearRect(0,0,r.s.w,r.s.h);c.drawImage(n,0,0);
@@ -268,7 +367,7 @@ function initOv(r){ // starting point that matches the auto result
 }
 $('go').onclick=async()=>{
   const act=sizes.filter(s=>s.on);if(!act.length)return alert('Select at least one size');
-  $('out').innerHTML='';results=[];$('go').disabled=true;
+  $('out').innerHTML='';results=[];$('go').disabled=true;$('aa').disabled=true;
   const fmt=$('fmt').value,ext=fmt==='png'?'png':'jpg',q=Math.min(100,Math.max(40,+$('q').value||90))/100;
   for(const f of files){
     const h=document.createElement('div');h.className='f';h.textContent=f.name;$('out').appendChild(h);
@@ -294,7 +393,7 @@ $('go').onclick=async()=>{
       cv.onpointerup=cv.onpointercancel=()=>{st=null};
     }
   }
-  $('st').textContent=`Done — ${results.length} images. Drag any preview to reposition it; use its slider to zoom.`;$('go').disabled=false;$('zip').disabled=false;
+  $('st').textContent=`Done — ${results.length} images. Drag any preview to reposition it; use its slider to zoom.`;$('go').disabled=false;$('zip').disabled=false;$('aa').disabled=!results.some(r=>r.file.buf);
 };
 $('zip').onclick=async()=>{
   if(typeof JSZip==='undefined')return alert('ZIP library failed to load');
