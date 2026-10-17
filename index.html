@@ -52,6 +52,8 @@ button:disabled{opacity:.5;cursor:default}
 <label class="k">Pad color <input id="bg" type="color" value="#ffffff"></label>
 <select id="fmt"><option value="png">PNG</option><option value="jpeg">JPEG</option></select>
 <label class="k">JPEG quality <input id="q" type="number" min="40" max="100" value="90" style="width:64px"></label>
+<select id="rq" title="Max resamples every layer once from its original pixels with a Lanczos filter and adds light sharpening to text and graphics. Standard is faster."><option value="max">Resize quality: Max (sharper)</option><option value="std">Resize quality: Standard (faster)</option></select>
+<label class="k" title="Show each result at 1 image pixel = 1 screen pixel, so what you see is what the saved file contains"><input type="checkbox" id="pv"> True-pixel preview</label>
 </div>
 <div class="row" style="margin-top:10px"><b>Wide strips (320x50, 300x50, 320x100)</b>
 <select id="strip"><option value="fill">Crop a horizontal band (no blur)</option><option value="edge">Fit + edge-color fill (clean, no blur)</option><option value="blur">Fit + blurred background</option><option value="same">Use mode above</option></select>
@@ -158,6 +160,54 @@ function step(src,tw,th){ // high quality downscale in halving steps
     const x=t.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(c,0,0,t.width,t.height);c=t}
   return c;
 }
+
+/* ===== max-quality resizing: one-step Lanczos-3 from the original pixels (premultiplied alpha, so no dark fringes) ===== */
+let QF=false;                                   // true while dragging/zooming: use the fast path, then re-render in full quality
+const hq=()=>!QF&&(($('rq')||{}).value||'max')==='max';
+const amtFor=(f,photo)=>{if(f<=1.15)return 0;const a=Math.min(0.65,0.2+0.14*Math.log2(f));return photo?Math.min(0.18,a*0.35):a};
+function lzWeights(ns,nd){
+  const scale=ns/nd,fs=Math.max(1,scale),sup=3*fs,taps=Math.ceil(sup*2)+2;
+  const start=new Int32Array(nd),cnt=new Int32Array(nd),w=new Float32Array(nd*taps);
+  for(let i=0;i<nd;i++){
+    const c=(i+0.5)*scale,lo=Math.max(0,Math.floor(c-sup)),hi=Math.min(ns-1,Math.ceil(c+sup));let sum=0,n=0;
+    for(let j=lo;j<=hi;j++){const x=(j+0.5-c)/fs,a=Math.abs(x);let v=0;
+      if(a<3)v=a<1e-6?1:(Math.sin(Math.PI*x)/(Math.PI*x))*(Math.sin(Math.PI*x/3)/(Math.PI*x/3));
+      w[i*taps+n]=v;sum+=v;n++}
+    for(let k=0;k<n;k++)w[i*taps+k]/=sum;start[i]=lo;cnt[i]=n;
+  }
+  return{start,cnt,w,taps};
+}
+function lanczosResize(src,tw,th,sharp){
+  const sw=src.width,sh=src.height;let sd;
+  try{sd=src.getContext('2d').getImageData(0,0,sw,sh).data}catch(e){return null}
+  const hx=lzWeights(sw,tw),vy=lzWeights(sh,th),tmp=new Float32Array(tw*sh*4);
+  for(let y=0;y<sh;y++){const row=y*sw*4,orow=y*tw*4;
+    for(let x=0;x<tw;x++){let r=0,g=0,b=0,a=0;const s0=hx.start[x],n=hx.cnt[x],wo=x*hx.taps;
+      for(let k=0;k<n;k++){const o=row+(s0+k)*4,al=sd[o+3];if(!al)continue;const wa=hx.w[wo+k]*al/255;r+=sd[o]*wa;g+=sd[o+1]*wa;b+=sd[o+2]*wa;a+=wa*255}
+      const q=orow+x*4;tmp[q]=r;tmp[q+1]=g;tmp[q+2]=b;tmp[q+3]=a}}
+  let out=new Float32Array(tw*th*4);const rowN=tw*4;
+  for(let y=0;y<th;y++){const s0=vy.start[y],n=vy.cnt[y],wo=y*vy.taps,orow=y*rowN;
+    for(let k=0;k<n;k++){const wt=vy.w[wo+k],row=(s0+k)*rowN;for(let i=0;i<rowN;i++)out[orow+i]+=wt*tmp[row+i]}}
+  if(sharp>0){ // gentle unsharp mask (3x3 binomial blur) on the premultiplied result
+    const o2=new Float32Array(out.length),X=(x)=>x<0?0:x>=tw?tw-1:x,Y=(y)=>y<0?0:y>=th?th-1:y;
+    for(let y=0;y<th;y++)for(let x=0;x<tw;x++){const xl=X(x-1),xr=X(x+1),yu=Y(y-1),yd=Y(y+1);
+      for(let c=0;c<4;c++){const v=out[(y*tw+x)*4+c],bl=(4*v+2*(out[(y*tw+xl)*4+c]+out[(y*tw+xr)*4+c]+out[(yu*tw+x)*4+c]+out[(yd*tw+x)*4+c])
+        +out[(yu*tw+xl)*4+c]+out[(yu*tw+xr)*4+c]+out[(yd*tw+xl)*4+c]+out[(yd*tw+xr)*4+c])/16;o2[(y*tw+x)*4+c]=v+sharp*(v-bl)}}
+    out=o2;
+  }
+  const px=new Uint8ClampedArray(tw*th*4);
+  for(let i=0;i<tw*th;i++){const o=i*4,a0=out[o+3];if(a0<=0.5)continue;const k=255/a0;       // un-premultiply with the true alpha, then clamp
+    px[o]=out[o]*k;px[o+1]=out[o+1]*k;px[o+2]=out[o+2]*k;px[o+3]=a0>255?255:a0}
+  const c=document.createElement('canvas');c.width=tw;c.height=th;c.getContext('2d').putImageData(new ImageData(px,tw,th),0,0);return c;
+}
+function rs(src,tw,th,sm){ // resize to exactly tw x th (Max) or to roughly that size (Standard); results are cached per source
+  tw=Math.max(1,Math.round(tw));th=Math.max(1,Math.round(th));
+  if(!hq())return step(src,tw,th);
+  const key=tw+'x'+th+':'+sm;if(src._rc&&src._rc.k===key)return src._rc.c;
+  if(src.width===tw&&src.height===th)return src;
+  const f=Math.max(src.width/tw,src.height/th),c=lanczosResize(src,tw,th,amtFor(f,false)*(sm==null?0.6:sm))||step(src,tw,th);
+  src._rc={k:key,c};return c;
+}
 function render(src,W,H,ov,noFg){
   const mode0=$('mode').value,a=+$('anc').value,fmt=$('fmt').value;
   const out=document.createElement('canvas');out.width=W;out.height=H;const x=out.getContext('2d');
@@ -178,11 +228,14 @@ function render(src,W,H,ov,noFg){
     x.fillStyle=gr;x.fillRect(0,0,W,H);
   }
   if(fmt==='jpeg'||mode==='fit'){x.fillStyle=$('bg').value;x.fillRect(0,0,W,H)}
-  if(mode==='stretch'){if(noFg){out._fg=null;return out}x.drawImage(step(src,W,H),0,0,W,H);return out}
+  if(mode==='stretch'){if(noFg){out._fg=null;return out}x.drawImage(rs(src,W,H),0,0,W,H);return out}
   if(mode==='fill'){
     const sc=Math.max(W/src.width,H/src.height),cw=W/sc,chh=H/sc;
     const sx=(src.width-cw)*ax,sy=(src.height-chh)*ay;
     if(noFg){out._fg={dx:-sx*sc,dy:-sy*sc,k:sc};return out}
+    if(hq()){const cx=Math.round(sx),cy=Math.round(sy),c2=Math.max(1,Math.min(src.width-cx,Math.round(cw))),h2=Math.max(1,Math.min(src.height-cy,Math.round(chh)));
+      const t=document.createElement('canvas');t.width=c2;t.height=h2;t.getContext('2d').drawImage(src,cx,cy,c2,h2,0,0,c2,h2);
+      const r2=lanczosResize(t,W,H,0.6*amtFor(Math.max(c2/W,h2/H),false));if(r2){x.drawImage(r2,0,0);return out}}
     const s=step(src,src.width*sc,src.height*sc),k=s.width/src.width;
     x.drawImage(s,sx*k,sy*k,cw*k,chh*k,0,0,W,H);return out;
   }
@@ -197,7 +250,7 @@ function render(src,W,H,ov,noFg){
   if(ov){sc=Math.max(W/src.width,H/src.height)*ov.z;w=src.width*sc;h=src.height*sc;dx=(W-w)/2+ov.x*W;dy=(H-h)/2+ov.y*H;
     dx=w>=W?Math.min(0,Math.max(W-w,dx)):Math.min(W-w,Math.max(0,dx));dy=h>=H?Math.min(0,Math.max(H-h,dy)):Math.min(H-h,Math.max(0,dy));
     ov.x=(dx-(W-w)/2)/W;ov.y=(dy-(H-h)/2)/H}
-  const fs=step(src,Math.max(1,Math.round(w)),Math.max(1,Math.round(h)));
+  const fs=rs(src,Math.max(1,Math.round(w)),Math.max(1,Math.round(h)));
   if(mode==='extend'){
     x.save();x.beginPath();x.rect(0,0,W,H);x.rect(dx,dy,w,h);x.clip('evenodd');
     x.filter='blur('+Math.max(3,Math.round(Math.min(W,H)/40))+'px)';
@@ -211,6 +264,7 @@ function render(src,W,H,ov,noFg){
   if(noFg){out._fg={dx,dy,k:w/src.width};return out}
   x.drawImage(fs,dx,dy,w,h);return out;
 }
+const pvW=s=>$('pv').checked?Math.round(s.w/(window.devicePixelRatio||1)):(s.w>=420?420:Math.round(s.w*1.3));
 const blobOf=r=>new Promise(res=>r.cv.toBlob(res,'image/'+r.fmt,r.q));
 const BM={multiply:'multiply',screen:'screen',overlay:'overlay',darken:'darken',lighten:'lighten','color dodge':'color-dodge','color burn':'color-burn','hard light':'hard-light','soft light':'soft-light',difference:'difference',exclusion:'exclusion',hue:'hue',saturation:'saturation',color:'color',luminosity:'luminosity'};
 let E=null;
@@ -222,10 +276,12 @@ function layers(x,final){
     x.globalAlpha=l.op;x.globalCompositeOperation=l.bm;
     if(!final){x.drawImage(l.cv,t.x,t.y,w,h);return}
     // export: snap to whole pixels and resample only once, so text and edges stay crisp (no half-pixel blur)
-    const iw=Math.max(1,Math.round(w)),ih=Math.max(1,Math.round(h));let src=l._sc&&l._sc.w===iw&&l._sc.h===ih?l._sc.c:null;
-    if(!src){const s=step(l.cv,iw,ih);src=s;
-      if(s.width!==iw||s.height!==ih){const q=document.createElement('canvas');q.width=iw;q.height=ih;const qc=q.getContext('2d');qc.imageSmoothingQuality='high';qc.drawImage(s,0,0,iw,ih);src=q}
-      l._sc={w:iw,h:ih,c:src}}
+    const iw=Math.max(1,Math.round(w)),ih=Math.max(1,Math.round(h)),qk=hq()?'m':'s';let src=l._sc&&l._sc.w===iw&&l._sc.h===ih&&l._sc.q===qk?l._sc.c:null;
+    if(!src){
+      if(qk==='m'){tight(l);if(iw===l.cv.width&&ih===l.cv.height)src=l.cv;else src=lanczosResize(l.cv,iw,ih,amtFor(Math.max(l.cv.width/iw,l.cv.height/ih),l.photo&&!l.txt))}
+      if(!src){const s=step(l.cv,iw,ih);src=s;
+        if(s.width!==iw||s.height!==ih){const q=document.createElement('canvas');q.width=iw;q.height=ih;const qc=q.getContext('2d');qc.imageSmoothingQuality='high';qc.drawImage(s,0,0,iw,ih);src=q}}
+      l._sc={w:iw,h:ih,c:src,q:qk}}
     x.drawImage(src,Math.round(t.x),Math.round(t.y))});
   x.globalAlpha=1;x.globalCompositeOperation='source-over';
 }
@@ -469,16 +525,17 @@ function tight(l){ // box of the visible pixels + how solid the layer is + a coa
   if(l.bb!==undefined)return l.bb;
   const c=l.cv,w=c.width,h=c.height;let d;
   try{d=c.getContext('2d').getImageData(0,0,w,h).data}catch(e){l.cov=null;return l.bb=null}
-  const G=32,cnt=new Uint32Array(G*G);let x0=w,y0=h,x1=-1,y1=-1,op=0,ink=0,semi=0,ns=0,sr=0,sg=0,sb=0,qr=0,qg=0,qb=0;
+  const G=32,cnt=new Uint32Array(G*G);let x0=w,y0=h,x1=-1,y1=-1,op=0,ink=0,semi=0,ns=0,sr=0,sg=0,sb=0,qr=0,qg=0,qb=0;const seen=new Uint8Array(32768);
   for(let y=0;y<h;y++){const row=y*w*4+3,gy=Math.min(G-1,(y*G/h)|0)*G;
     for(let x=0;x<w;x++){const a=d[row+x*4];if(a>12){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;y1=y;ink++;
       if(a>=200){op++;cnt[gy+Math.min(G-1,(x*G/w)|0)]++}if(a<230)semi++;
-      if((ink&7)===0){const o=row-3+x*4,r=d[o],g=d[o+1],b=d[o+2];ns++;sr+=r;sg+=g;sb+=b;qr+=r*r;qg+=g*g;qb+=b*b}}}}
+      if((ink&7)===0){const o=row-3+x*4,r=d[o],g=d[o+1],b=d[o+2];ns++;sr+=r;sg+=g;sb+=b;qr+=r*r;qg+=g*g;qb+=b*b;seen[(r>>3)<<10|(g>>3)<<5|(b>>3)]=1}}}}
   if(x1<0){l.cov=0;l.soft=false;return l.bb=null}
   const cell=(w/G)*(h/G),mask=new Uint8Array(G*G);for(let i=0;i<G*G;i++)mask[i]=cnt[i]>=cell*0.25?1:0;
   l.mask={G,data:mask,w,h};l.cov=op/((x1+1-x0)*(y1+1-y0));
   const sd=ns>1?Math.sqrt(Math.max(0,qr/ns-(sr/ns)**2)+Math.max(0,qg/ns-(sg/ns)**2)+Math.max(0,qb/ns-(sb/ns)**2)):99;
-  l.soft=ink>200&&semi/ink>=0.35&&sd<35;   // mostly semi-transparent AND one colour = blurred shadow / glow
+  l.soft=ink>200&&semi/ink>=0.35&&sd<35;
+  let nc=0;for(let i=0;i<32768;i++)nc+=seen[i];l.photo=nc>700;      // many distinct colours = photo: sharpen less   // mostly semi-transparent AND one colour = blurred shadow / glow
   return l.bb={x0,y0,x1:x1+1,y1:y1+1};
 }
 const ROLE_LBL={bg:'background',decor:'decor',hero:'hero image',content:'content',hide:'hidden',none:'empty'};
@@ -563,10 +620,13 @@ function buildLayerList(r){
     row.append(cb,nm);lp.appendChild(row);
   }
 }
-function cardRedraw(r){r.lay=withE(r,()=>flat(r.base,r.clip));repaint(r);drawSel(r)}
+function cardRedraw(r,quick){
+  if(quick&&hq()){QF=true;try{r.lay=withE(r,()=>flat(r.base,r.clip))}finally{QF=false}repaint(r);drawSel(r);clearTimeout(r.qt);r.qt=setTimeout(()=>cardRedraw(r),260);return}
+  r.lay=withE(r,()=>flat(r.base,r.clip));repaint(r);drawSel(r)}
+function repaintQuick(r){if(!hq()){repaint(r);return}QF=true;try{repaint(r)}finally{QF=false}clearTimeout(r.qt);r.qt=setTimeout(()=>repaint(r),260)}
 function cardSetK(r,i,k){ // resize about the visible centre of the element
   const q=(r.sel=i,selRect(r)),b=q.b,T=q.T,cx=q.x+q.w/2,cy=q.y+q.h/2;
-  T.k=Math.min(T.k0*5,Math.max(T.k0*0.05,k));T.x=cx-(b.x0+b.x1)/2*T.k;T.y=cy-(b.y0+b.y1)/2*T.k;cardRedraw(r)}
+  T.k=Math.min(T.k0*5,Math.max(T.k0*0.05,k));T.x=cx-(b.x0+b.x1)/2*T.k;T.y=cy-(b.y0+b.y1)/2*T.k;cardRedraw(r,true)}
 function cardEvents(r,cv){
   let drag=null;r.sel=-1;
   const handleAt=(p)=>{if(!(r.lay&&r.edit&&r.sel>=0))return -1;const q=selRect(r);if(!q)return -1;
@@ -583,7 +643,7 @@ function cardEvents(r,cv){
     if(r.lay)return;cv.setPointerCapture(e.pointerId);if(!r.ov)r.ov=initOv(r);drag={pan:{x:e.clientX,y:e.clientY}}};
   cv.onpointermove=e=>{
     if(!drag){if(r.lay&&r.edit){const p=cardPt(r,cv,e),hd=handleAt(p);cv.style.cursor=hd>=0?(hd===0||hd===3?'nwse-resize':'nesw-resize'):(cardHit(r,p)>=0||(r.sel>=0&&inkOn(r,r.sel,p)))?'grab':'default'}return}
-    if(drag.pan){const k=r.s.w/cv.getBoundingClientRect().width;r.ov.x+=(e.clientX-drag.pan.x)*k/r.s.w;r.ov.y+=(e.clientY-drag.pan.y)*k/r.s.h;drag.pan={x:e.clientX,y:e.clientY};repaint(r);return}
+    if(drag.pan){const k=r.s.w/cv.getBoundingClientRect().width;r.ov.x+=(e.clientX-drag.pan.x)*k/r.s.w;r.ov.y+=(e.clientY-drag.pan.y)*k/r.s.h;drag.pan={x:e.clientX,y:e.clientY};repaintQuick(r);return}
     const p=cardPt(r,cv,e);
     if(drag.size){cardSetK(r,r.sel,drag.k0*(Math.hypot(p.x-drag.c.x,p.y-drag.c.y)/drag.d0));if(r.sl)r.sl.value=Math.round(r.edit.t[r.sel].k/r.edit.t[r.sel].k0*100);return}
     const T=r.edit.t[drag.i];T.x+=p.x-drag.p.x;T.y+=p.y-drag.p.y;drag.p=p;cardRedraw(r)};
@@ -603,6 +663,12 @@ function initOv(r){ // starting point that matches the auto result
   if(i.mode==='fill'||i.mode==='stretch'){const w=src.width*cover,h=src.height*cover;return{z:1,x:(w-W)*(0.5-i.ax)/W,y:(h-H)*(0.5-i.ay)/H}}
   return{z:fit/cover,x:0,y:0};
 }
+$('pv').onchange=()=>{for(const r of results){r.cv.style.width=pvW(r.s)+'px';drawSel(r)}};
+$('rq').onchange=async()=>{
+  if(!results.length)return;$('st').textContent='Re-rendering at the new quality\u2026';await new Promise(z=>setTimeout(z));
+  for(const r of results){if(r.lay&&r.edit)cardRedraw(r);else repaint(r)}
+  $('st').textContent='Done \u2014 re-rendered.';
+};
 $('go').onclick=async()=>{
   const act=sizes.filter(s=>s.on);if(!act.length)return alert('Select at least one size');
   $('out').innerHTML='';results=[];$('go').disabled=true;
@@ -614,7 +680,7 @@ $('go').onclick=async()=>{
       $('st').textContent=`Processing ${f.name} ${s.w}×${s.h}…`;await new Promise(r=>setTimeout(r));
       const cv=render(f.cv,s.w,s.h);
       const r={name:`${f.name}_${s.w}x${s.h}.${ext}`,cv,src:f.cv,file:f,s,ov:null,fmt,q};results.push(r);
-      cv.style.cssText=`display:block;max-width:100%;height:auto;width:${s.w>=420?420:Math.round(s.w*1.3)}px;border:1px solid var(--bd);cursor:grab;touch-action:none`;
+      cv.style.cssText=`display:block;max-width:100%;height:auto;width:${pvW(s)}px;border:1px solid var(--bd);cursor:grab;touch-action:none`;
       const d=document.createElement('div');d.className='o';
       const wrap=document.createElement('div');wrap.style.cssText='position:relative;display:inline-block;line-height:0';wrap.appendChild(cv);
       const ov2=document.createElement('canvas');ov2.width=s.w;ov2.height=s.h;ov2.style.cssText='position:absolute;left:1px;top:1px;width:calc(100% - 2px);height:calc(100% - 2px);pointer-events:none';wrap.appendChild(ov2);r.ov2=ov2;d.appendChild(wrap);
@@ -623,7 +689,7 @@ $('go').onclick=async()=>{
       d.appendChild(m);g.appendChild(d);
       r.kb=m.querySelector('.kb');const sl=m.querySelector('input');r.sl=sl;
       blobOf(r).then(b=>r.kb.textContent=(b.size/1024).toFixed(1)+' KB');
-      sl.oninput=()=>{if(r.lay&&r.edit){if(r.sel>=0)cardSetK(r,r.sel,r.edit.t[r.sel].k0*sl.value/100);return}if(r.lay)return;if(!r.ov)r.ov=initOv(r);r.ov.z=sl.value/100;repaint(r)};
+      sl.oninput=()=>{if(r.lay&&r.edit){if(r.sel>=0)cardSetK(r,r.sel,r.edit.t[r.sel].k0*sl.value/100);return}if(r.lay)return;if(!r.ov)r.ov=initOv(r);r.ov.z=sl.value/100;repaintQuick(r)};
       m.querySelector('.rs').onclick=()=>{r.ov=null;r.lay=null;r.edit=null;r.base=null;r.clip=null;r.sel=-1;repaint(r);cardSync(r)};
       m.querySelector('.sv').onclick=async()=>{const b=await blobOf(r),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=r.name;a.click()};
       const ab=m.querySelector('.aal');if(ab)ab.onclick=()=>autoOne(r);
