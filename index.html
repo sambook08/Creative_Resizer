@@ -62,7 +62,7 @@ button:disabled{opacity:.5;cursor:default}
 
 <div class="row" style="margin-bottom:14px"><button id="go" disabled>Generate</button>
 <button id="zip" class="g" disabled>Download all (ZIP)</button>
-<label class="k" title="Used by the Auto-align button on each size"><input type="checkbox" id="aah"> Auto-align: hide what doesn't fit</label><span id="st"></span></div>
+<label class="k" title="PSD sizes are cleaned up and arranged automatically as they are generated"><input type="checkbox" id="aag"> Auto-align PSDs when generating</label><label class="k" title="Keep swirls and other decoration when they do not cover any text (they are hidden by default)"><input type="checkbox" id="aak"> Keep decoration</label><label class="k" title="Used by Auto-align"><input type="checkbox" id="aah"> Auto-align: hide what doesn't fit</label><span id="st"></span></div>
 <div id="out"></div>
 </div>
 <div id="ed" style="display:none;position:fixed;inset:0;z-index:50;background:var(--bg);flex-direction:column;gap:10px;padding:12px;padding-top:calc(12px + env(safe-area-inset-top,0px))">
@@ -90,6 +90,26 @@ const drop=$('drop');drop.onclick=()=>$('fi').click();
 drop.ondragover=e=>{e.preventDefault();drop.classList.add('on')};drop.ondragleave=()=>drop.classList.remove('on');
 drop.ondrop=e=>{e.preventDefault();drop.classList.remove('on');load(e.dataTransfer.files)};
 $('fi').onchange=e=>load(e.target.files);
+
+function maskedCanvas(l){ // apply the layer's raster mask, as Photoshop does; falls back to the plain layer if the mask looks unreadable
+  const m=l.mask,src=l.canvas;
+  if(!m||!m.canvas||m.disabled)return src;
+  try{
+    const w=src.width,h=src.height,mw=m.canvas.width,mh=m.canvas.height;if(!w||!h||!mw||!mh)return src;
+    const md=m.canvas.getContext('2d').getImageData(0,0,mw,mh).data;
+    let aMin=255,aMax=0,rMin=255,rMax=0;
+    for(let i=0;i<md.length;i+=16){if(md[i+3]<aMin)aMin=md[i+3];if(md[i+3]>aMax)aMax=md[i+3];if(md[i]<rMin)rMin=md[i];if(md[i]>rMax)rMax=md[i]}
+    const off=(aMax-aMin)>=(rMax-rMin)?3:0,def=m.defaultColor==null?255:m.defaultColor;     // mask stored in alpha or in colour: use whichever varies
+    const covers=(m.left||0)<=(l.left||0)&&(m.top||0)<=(l.top||0)&&(m.left||0)+mw>=(l.left||0)+w&&(m.top||0)+mh>=(l.top||0)+h;
+    if(aMax-aMin<8&&rMax-rMin<8&&(off===3?aMax:rMax)>=247&&(covers||def>=247))return src;   // plain white mask: nothing to do
+    const out=document.createElement('canvas');out.width=w;out.height=h;const ox=out.getContext('2d');ox.drawImage(src,0,0);
+    const id=ox.getImageData(0,0,w,h),d=id.data,L0=l.left||0,T0=l.top||0,ML=m.left||0,MT=m.top||0;let before=0,after=0;
+    for(let y=0;y<h;y++){const my=T0+y-MT;for(let x=0;x<w;x++){const o=(y*w+x)*4,a=d[o+3];if(!a)continue;before+=a;
+      const mx=L0+x-ML,v=(mx>=0&&my>=0&&mx<mw&&my<mh)?md[(my*mw+mx)*4+off]:def;d[o+3]=a*v/255;after+=d[o+3]}}
+    if(before>0&&after<before*0.02)return src;     // mask wiped the layer out: it was probably read the wrong way round
+    ox.putImageData(id,0,0);return out;
+  }catch(e){return src}
+}
 function layersCanvas(psd){
   const c=document.createElement('canvas');c.width=psd.width;c.height=psd.height;const x=c.getContext('2d');
   const bm={multiply:'multiply',screen:'screen',overlay:'overlay',darken:'darken',lighten:'lighten','color dodge':'color-dodge','color burn':'color-burn','hard light':'hard-light','soft light':'soft-light',difference:'difference',exclusion:'exclusion',hue:'hue',saturation:'saturation',color:'color',luminosity:'luminosity'};
@@ -100,7 +120,7 @@ function layersCanvas(psd){
       if(!l.canvas)continue;
       x.globalAlpha=l.opacity==null?1:l.opacity;
       x.globalCompositeOperation=bm[l.blendMode]||'source-over';
-      x.drawImage(l.canvas,l.left||0,l.top||0);
+      x.drawImage(maskedCanvas(l),l.left||0,l.top||0);
     }
   })(psd.children);
   return c;
@@ -138,7 +158,7 @@ function step(src,tw,th){ // high quality downscale in halving steps
     const x=t.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(c,0,0,t.width,t.height);c=t}
   return c;
 }
-function render(src,W,H,ov){
+function render(src,W,H,ov,noFg){
   const mode0=$('mode').value,a=+$('anc').value,fmt=$('fmt').value;
   const out=document.createElement('canvas');out.width=W;out.height=H;const x=out.getContext('2d');
   x.imageSmoothingQuality='high';
@@ -158,10 +178,11 @@ function render(src,W,H,ov){
     x.fillStyle=gr;x.fillRect(0,0,W,H);
   }
   if(fmt==='jpeg'||mode==='fit'){x.fillStyle=$('bg').value;x.fillRect(0,0,W,H)}
-  if(mode==='stretch'){x.drawImage(step(src,W,H),0,0,W,H);return out}
+  if(mode==='stretch'){if(noFg){out._fg=null;return out}x.drawImage(step(src,W,H),0,0,W,H);return out}
   if(mode==='fill'){
     const sc=Math.max(W/src.width,H/src.height),cw=W/sc,chh=H/sc;
     const sx=(src.width-cw)*ax,sy=(src.height-chh)*ay;
+    if(noFg){out._fg={dx:-sx*sc,dy:-sy*sc,k:sc};return out}
     const s=step(src,src.width*sc,src.height*sc),k=s.width/src.width;
     x.drawImage(s,sx*k,sy*k,cw*k,chh*k,0,0,W,H);return out;
   }
@@ -187,6 +208,7 @@ function render(src,W,H,ov){
     if(dx+w<W-0.5)x.drawImage(fs,fw-3,0,3,fh,dx+w,dy-P,W-dx-w+P,h+2*P);
     x.restore();
   }
+  if(noFg){out._fg={dx,dy,k:w/src.width};return out}
   x.drawImage(fs,dx,dy,w,h);return out;
 }
 const blobOf=r=>new Promise(res=>r.cv.toBlob(res,'image/'+r.fmt,r.q));
@@ -200,12 +222,15 @@ function layers(x,final){
     x.globalAlpha=l.op;x.globalCompositeOperation=l.bm;
     if(!final){x.drawImage(l.cv,t.x,t.y,w,h);return}
     // export: snap to whole pixels and resample only once, so text and edges stay crisp (no half-pixel blur)
-    const iw=Math.max(1,Math.round(w)),ih=Math.max(1,Math.round(h)),s=step(l.cv,iw,ih);let src=s;
-    if(s.width!==iw||s.height!==ih){const q=document.createElement('canvas');q.width=iw;q.height=ih;const qc=q.getContext('2d');qc.imageSmoothingQuality='high';qc.drawImage(s,0,0,iw,ih);src=q}
+    const iw=Math.max(1,Math.round(w)),ih=Math.max(1,Math.round(h));let src=l._sc&&l._sc.w===iw&&l._sc.h===ih?l._sc.c:null;
+    if(!src){const s=step(l.cv,iw,ih);src=s;
+      if(s.width!==iw||s.height!==ih){const q=document.createElement('canvas');q.width=iw;q.height=ih;const qc=q.getContext('2d');qc.imageSmoothingQuality='high';qc.drawImage(s,0,0,iw,ih);src=q}
+      l._sc={w:iw,h:ih,c:src}}
     x.drawImage(src,Math.round(t.x),Math.round(t.y))});
   x.globalAlpha=1;x.globalCompositeOperation='source-over';
 }
-function flat(){const c=document.createElement('canvas');c.width=E.W;c.height=E.H;const x=c.getContext('2d');x.fillStyle=$('bg').value;x.fillRect(0,0,E.W,E.H);layers(x,true);return c}
+function flat(base,clip){const c=document.createElement('canvas');c.width=E.W;c.height=E.H;const x=c.getContext('2d');x.fillStyle=$('bg').value;x.fillRect(0,0,E.W,E.H);if(base)x.drawImage(base,0,0);
+  if(clip){x.save();x.beginPath();x.rect(clip.x,clip.y,clip.w,clip.h);x.clip()}layers(x,true);if(clip)x.restore();return c}
 function sizeCv(){const w=$('edw'),c=$('edv');c.width=Math.max(300,w.clientWidth);c.height=Math.max(200,w.clientHeight)}
 function fitView(){
   let a=0,b=0,c=E.W,d=E.H;
@@ -240,10 +265,11 @@ function syncSel(){
   $('eds').disabled=E.sel<0;if(E.sel>=0){const t=E.t[E.sel];$('eds').value=Math.round(t.k/t.k0*100)}
 }
 function ensureLay(f){
+  if(f.layFail)return false;
   try{if(!f.lay){const psd=agPsd.readPsd(f.buf,{skipThumbnail:true}),list=[];
     (function walk(a){for(const l of a||[]){if(l.hidden||/remove this layer/i.test(l.name||''))continue;if(l.children){walk(l.children);continue}
-      if(l.canvas)list.push({name:l.name||'Layer',txt:!!l.text,cv:l.canvas,left:l.left||0,top:l.top||0,op:l.opacity==null?1:l.opacity,bm:BM[l.blendMode]||'source-over'})}})(psd.children);
-    f.lay={w:psd.width,h:psd.height,list}}return true}catch(e){alert('Could not read layers: '+e.message);return false}
+      if(l.canvas)list.push({name:l.name||'Layer',txt:!!l.text,cv:maskedCanvas(l),left:l.left||0,top:l.top||0,op:l.opacity==null?1:l.opacity,bm:BM[l.blendMode]||'source-over'})}})(psd.children);
+    f.lay={w:psd.width,h:psd.height,list}}return true}catch(e){f.layFail=true;alert('Could not read layers: '+e.message);return false}
 }
 function openEd(r){
   const f=r.file;if(!ensureLay(f))return;
@@ -271,11 +297,11 @@ const closeEd=()=>{$('ed').style.display='none';E=null};
 $('edc').onclick=closeEd;
 addEventListener('keydown',e=>{if(e.key==='Escape'&&E)closeEd()});
 addEventListener('resize',()=>{if(E){sizeCv();fitView();drawEd()}});
-/* ===== Auto-align v4 (heuristic layout planner; pure, no DOM) ===== */
+/* ===== Auto-align v5 (heuristic layout planner; pure, no DOM) ===== */
 const AA_HERO=/photo|person|people|woman|women|man\b|girl|boy|model|talent|hero|product|phone|mockup|device|character|face|portrait|image|picture/i;
 const AA_DECOR=/swirl|wave|ribbon|shape|decor|pattern|stroke|line|gradient|texture|overlay|glow|blob|curve|stripe|flow|confetti|sparkle/i;
 const AA_BG=/(^|[^a-z])(bg|background|backdrop)([^a-z]|$)/i;
-function planAlign(items,dw,dh,W,H,mode,hideMinor){
+function planAlign(items,dw,dh,W,H,mode,hideMinor,keepDecor){
   const area=dw*dh,roles={},tightBn=W/H>=3||H/W>=2.5||Math.min(W,H)<=100;
   const box=it=>({it,w:it.bb.x1-it.bb.x0,h:it.bb.y1-it.bb.y0,x0:it.left+it.bb.x0,y0:it.top+it.bb.y0,x1:it.left+it.bb.x1,y1:it.top+it.bb.y1});
   // ---- 1) role of every layer: bg | decor | hero | content | hide
@@ -308,9 +334,12 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
     roles[o.it.i]=h?'hero':'decor';if(h)heroes.push(o)}
   for(const it of items)if(it.role==='hero'&&it.bb&&!heroes.some(o=>o.it.i===it.i)){heroes.push(box(it));roles[it.i]='hero'}
   const bgIds=items.filter(it=>roles[it.i]==='bg').map(it=>it.i);
-  const hidden=items.filter(it=>roles[it.i]==='hide'||(tightBn&&roles[it.i]==='decor')).map(it=>it.i);
+  const hidden=items.filter(it=>roles[it.i]==='hide'||((tightBn||!keepDecor)&&roles[it.i]==='decor'&&it.role!=='decor')).map(it=>it.i);
   const moves=[];
   const mg=Math.max(2,Math.round(Math.min(W,H)*0.04)),gb=Math.max(2,Math.round(Math.min(W,H)*0.03)),cover=Math.max(W/dw,H/dh),sCap=cover*1.25;
+  if(Math.abs(Math.log((W/H)/(dw/dh)))<0.12){
+    return{moves:[],bg:bgIds,hidden,roles,s:Math.max(W/dw,H/dh),layout:'as designed',
+      info:'Same shape as the design \u00b7 kept as designed'+(hidden.length?' \u00b7 hid: '+hidden.slice(0,3).map(i=>items[i].name||'Layer').join(', ')+(hidden.length>3?'\u2026':''):'')}}
   // ---- 2) group nearby/overlapping content layers into blocks (headline lines, pill, button...)
   const build=Gf=>{
     const par=cont.map((_,i)=>i),find=i=>par[i]===i?i:(par[i]=find(par[i])),G=Gf*Math.min(dw,dh);
@@ -324,30 +353,40 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
       c.key=!c.legal&&/logo|cta|button|btn|head|title|offer/i.test(nm);return c});
   };
   let gf=0.02,all=build(gf);while(all.length>11&&gf<0.2){gf*=1.4;all=build(gf)}
+  const heroMem=heroes.slice();
+  if(heroes.length){
+    const B={x0:1e9,y0:1e9,x1:-1e9,y1:-1e9};for(const o of heroes){B.x0=Math.min(B.x0,o.x0);B.y0=Math.min(B.y0,o.y0);B.x1=Math.max(B.x1,o.x1);B.y1=Math.max(B.y1,o.y1)}
+    all=all.filter(c=>{if(c.m.some(f=>f.it.txt))return true;
+      const ix=Math.max(0,Math.min(c.x1,B.x1)-Math.max(c.x0,B.x0)),iy=Math.max(0,Math.min(c.y1,B.y1)-Math.max(c.y0,B.y0));
+      if(ix*iy>=0.25*c.w*c.h){for(const f of c.m)heroMem.push(f);return false}return true});
+  }
   // ---- 3) images: kept whole; flush right on wide banners, else on their original side / bottom.
   let R={x:mg,y:mg,w:W-2*mg,h:H-2*mg},heroRect=null,heroMoves=[];
   const U={x0:1e9,y0:1e9,x1:-1e9,y1:-1e9};
   for(const o of heroes){U.x0=Math.min(U.x0,o.x0);U.y0=Math.min(U.y0,o.y0);U.x1=Math.max(U.x1,o.x1);U.y1=Math.max(U.y1,o.y1)}
-  const heroPlan=f=>{
-    const wl=U.x1-U.x0,hl=U.y1-U.y0,wide=W/H>=1.6,tall=H/W>=1.3,low=(U.y0+U.y1)/2>=dh/2,right=wide||(U.x0+U.x1)/2>=dw/2;
-    let s,X,Y;
-    if(wide){s=Math.min(H/hl,0.38*W/wl);X=W-wl*s;Y=hl*s>=H?0:H-hl*s}
-    else{s=tall?Math.min(0.9*W/wl,f*H/hl):Math.min(f*W/wl,1.0*H/hl);
-      X=wl*s>0.8*W?(W-wl*s)/2:(right?W-wl*s:0);Y=low?H-hl*s:0}
-    const hw=wl*s,hh=hl*s,Rn={x:mg,y:mg,w:W-2*mg,h:H-2*mg};
+  const hwl=U.x1-U.x0,hhl=U.y1-U.y0,wideB=W/H>=1.6,tallB=H/W>=1.3,hLow=(U.y0+U.y1)/2>=dh/2,hRight=wideB||(U.x0+U.x1)/2>=dw/2;
+  const placeAt=s=>{
+    const X=wideB?W-hwl*s:(hwl*s>0.8*W?(W-hwl*s)/2:(hRight?W-hwl*s:0)),Y=wideB?(hhl*s>=H?0:H-hhl*s):(hLow?H-hhl*s:0);
+    const hw=hwl*s,hh=hhl*s,Rn={x:mg,y:mg,w:W-2*mg,h:H-2*mg};
     if(hw>=0.55*W){if(Y+hh/2>H/2){Rn.h=Math.max(8,Y-gb-Rn.y)}else{const ny=Math.min(H-8,Y+hh+gb);Rn.h=Rn.y+Rn.h-ny;Rn.y=ny}}
     else if(X+hw/2>=W/2){Rn.w=Math.max(8,X-gb-Rn.x)}else{const nx=Math.min(W-8,X+hw+gb);Rn.w=Rn.x+Rn.w-nx;Rn.x=nx}
-    return{R:Rn,rect:{x:X,y:Y,w:hw,h:hh},moves:heroes.map(o=>({i:o.it.i,x:X+(o.it.left-U.x0)*s,y:Y+(o.it.top-U.y0)*s,k:s}))};
+    return{s,R:Rn,rect:{x:X,y:Y,w:hw,h:hh},
+      mem:heroMem.map(o=>({x:X+(o.x0-U.x0)*s,y:Y+(o.y0-U.y0)*s,w:o.w*s,h:o.h*s})),
+      moves:heroMem.map(o=>({i:o.it.i,x:X+(o.it.left-U.x0)*s,y:Y+(o.it.top-U.y0)*s,k:s}))};
   };
-  const apply=h=>{R=h.R;heroRect=h.rect;heroMoves=h.moves};
+  const heroPlan=f=>placeAt(wideB?Math.min(H/hhl,0.38*W/hwl):tallB?Math.min(0.9*W/hwl,f*H/hhl):Math.min(f*W/hwl,1.0*H/hhl));
+  let heroCur=null;const apply=h=>{heroCur=h;R=h.R;heroRect=h.rect;heroMoves=h.moves};
   const clash=P=>{for(let i=0;i<P.length;i++)for(let j=i+1;j<P.length;j++){const a=P[i],b=P[j];
     if(a.x-gb<b.x+b.w&&a.x+a.w+gb>b.x&&a.y-gb<b.y+b.h&&a.y+a.h+gb>b.y)return true}return false};
   function layout(C){
     let cap=sCap;for(const c of C)cap=Math.min(cap,R.w/c.w,R.h/c.h);
-    const prop=()=>{for(let s=cap;s>cap*0.04;s*=0.97){
-      const P=C.map(c=>{const w=c.w*s,h=c.h*s,fx=dw>c.w?c.x0/(dw-c.w):.5,fy=dh>c.h?c.y0/(dh-c.h):.5;
-        return{x:R.x+Math.min(1,Math.max(0,fx))*(R.w-w),y:R.y+Math.min(1,Math.max(0,fy))*(R.h-h),w,h}});
-      if(!clash(P))return{s,P,name:'keep arrangement'}}return null};
+    const prop=()=>{
+      const F={x0:1e9,y0:1e9,x1:-1e9,y1:-1e9};for(const c of C){F.x0=Math.min(F.x0,c.x0);F.y0=Math.min(F.y0,c.y0);F.x1=Math.max(F.x1,c.x1);F.y1=Math.max(F.y1,c.y1)}
+      const fw=F.x1-F.x0,fh=F.y1-F.y0,s=Math.min(cap,R.w/fw,R.h/fh);if(!(s>0))return null;
+      const imgRight=heroRect&&heroRect.x+heroRect.w/2>=W/2,imgLeft=heroRect&&!imgRight&&heroRect.w<0.55*W;
+      const ox=imgLeft?R.x+R.w-fw*s:(imgRight?R.x:R.x+(R.w-fw*s)/2),oy=R.y+(R.h-fh*s)/2;
+      const P=C.map(c=>({x:ox+(c.x0-F.x0)*s,y:oy+(c.y0-F.y0)*s,w:c.w*s,h:c.h*s}));
+      return{s,P,name:'keep arrangement'}};
     const grid=rows=>{
       const A=C.map(c=>rows?{x0:c.y0,y0:c.x0,w:c.h,h:c.w}:{x0:c.x0,y0:c.y0,w:c.w,h:c.h}),Rg=rows?{x:R.y,y:R.x,w:R.h,h:R.w}:R,n=A.length;
       const ord=A.map((_,i)=>i).sort((a,b)=>(A[a].x0+A[a].w/2)-(A[b].x0+A[b].w/2));
@@ -376,7 +415,7 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
       for(const k of [g1,g2])if(k&&(!best||k.s>best.s*(best===p?1.15:1)))best=k}
     return best||grid(false)||grid(true);
   }
-  if(!cont.length){if(heroes.length)apply(heroPlan(.4));moves.push(...heroMoves);
+  if(!cont.length||!all.length){if(heroes.length)apply(heroPlan(.4));moves.push(...heroMoves);
     return{moves,bg:bgIds,hidden,roles,s:0,layout:'images only',info:'Only background and image layers found, nothing to arrange'}}
   // try several image sizes (non-wide banners) and keep the one with the best balance of image size and text size
   let C=all.slice(),best=null;
@@ -386,6 +425,15 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
     if(tries.length){const sc=t=>t.L.s*Math.pow(Math.max(1,t.h.rect.w),0.7);let pick=tries[0];for(const t of tries)if(sc(t)>sc(pick))pick=t;apply(pick.h);best=pick.L}
     else{apply(heroPlan(.3));best=layout(C)}
   }else best=layout(C);
+  const growHero=()=>{
+    if(!heroCur||wideB||!best)return;
+    const obst=best.P.map(p=>({x:p.x-gb,y:p.y-gb,w:p.w+2*gb,h:p.h+2*gb}));
+    const hit=m=>obst.some(o=>m.x<o.x+o.w&&m.x+m.w>o.x&&m.y<o.y+o.h&&m.y+m.h>o.y);
+    let ok=heroCur;const sMax=tallB?Math.min(0.95*W/hwl,0.62*H/hhl):Math.min(0.9*W/hwl,1.0*H/hhl);
+    for(let s=heroCur.s*1.03;s<=sMax;s*=1.03){const p=placeAt(s);
+      if(p.mem.some(hit)||p.rect.x<mg-0.5||p.rect.y<mg-0.5)break;ok=p}
+    if(ok!==heroCur){heroCur=ok;heroRect=ok.rect;heroMoves=ok.moves}
+  };
   // ---- 4) optional: too small to read? hide the least important blocks while it clearly helps
   if(hideMinor&&best){
     const target=cover*0.6;
@@ -397,6 +445,7 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
       C=C.filter(x=>x!==pick.c);best=pick.L;for(const f of pick.c.m)hidden.push(f.it.i);
     }
   }
+  growHero();
   moves.push(...heroMoves);
   if(!best)return{info:'Could not fit the elements.',moves,bg:bgIds,hidden,roles};
   // ---- 5) decor (swirls etc.) that would end up behind the text is removed
@@ -404,7 +453,7 @@ function planAlign(items,dw,dh,W,H,mode,hideMinor){
   const inkAt=(it,px,py)=>{const m=it.mask;if(!m)return false;const lx=(px-ox)/cover-it.left,ly=(py-oy)/cover-it.top;
     if(lx<0||ly<0||lx>=m.w||ly>=m.h)return false;return m.data[((ly/m.h*m.G)|0)*m.G+((lx/m.w*m.G)|0)]===1};
   for(const it of items){
-    if(roles[it.i]!=='decor'||hidden.includes(it.i)||it.role==='decor')continue;
+    if(roles[it.i]!=='decor'||hidden.includes(it.i))continue;
     let hit=false;
     for(const p of best.P){let n=0;for(let a=0;a<6;a++)for(let b=0;b<6;b++)if(inkAt(it,p.x+(a+.5)*p.w/6,p.y+(b+.5)*p.h/6))n++;if(n/36>=0.12){hit=true;break}}
     if(hit)hidden.push(it.i);
@@ -435,7 +484,7 @@ function tight(l){ // box of the visible pixels + how solid the layer is + a coa
 const ROLE_LBL={bg:'background',decor:'decor',hero:'hero image',content:'content',hide:'hidden',none:'empty'};
 function alignE(mode,hide){ // plans a layout for the layers in E and writes it into E.t / E.vis
   const L=E.f.lay,items=L.list.map((l,i)=>{const bb=tight(l);return{i,name:l.name,txt:l.txt,role:l.role,left:l.left,top:l.top,bb,cov:l.cov,mask:l.mask,soft:l.soft}});
-  const p=planAlign(items,L.w,L.h,E.W,E.H,mode,hide);
+  const kd=$('aak'),p=planAlign(items,L.w,L.h,E.W,E.H,mode,hide,!!(kd&&kd.checked));
   initT('cover');
   for(const m of p.moves){const t=E.t[m.i];t.x=m.x;t.y=m.y;t.k=m.k}
   for(const i of p.hidden)E.vis[i]=false;
@@ -444,20 +493,109 @@ function alignE(mode,hide){ // plans a layout for the layers in E and writes it 
 }
 $('eaa').onclick=()=>{if(!E)return;const p=alignE($('edam').value,$('edhm').checked);
   $('edn').textContent=p.info+'. Wrong call on a layer? Change its role in the list and click Auto-align again; Reset undoes everything.';E.sel=-1;fitView();syncSel();drawEd()};
-function autoOne(r){ // auto-align one size without opening the editor
-  if(E||!r.file.buf||!ensureLay(r.file))return;
+function autoApply(r){ // arrange one result from its PSD layers (no editor needed)
+  if(E||!r.file.buf||!ensureLay(r.file))return null;
+  E={r,f:r.file,W:r.s.w,H:r.s.h,sel:-1,drag:null,pan:null};
+  try{const p=alignE('auto',$('aah').checked);r.base=null;r.clip=null;r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};r.sel=-1;repaint(r);cardSync(r);return p}
+  finally{E=null}
+}
+function autoOne(r){ // the Auto-align button on a card
   $('st').textContent=`Auto-aligning ${r.s.w}\u00d7${r.s.h}\u2026`;
   setTimeout(()=>{
-    E={r,f:r.file,W:r.s.w,H:r.s.h,sel:-1,drag:null,pan:null};
-    try{const p=alignE('auto',$('aah').checked);r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);
-      $('st').textContent=`${r.s.w}\u00d7${r.s.h} auto-aligned. ${p.info}. Click Edit layers to fine-tune, or Reset to undo.`}
+    try{const p=autoApply(r);if(p)$('st').textContent=`${r.s.w}\u00d7${r.s.h} auto-aligned. ${p.info}. Click an element to move or resize it. Reset undoes.`}
     catch(e){console.error(e);$('st').textContent='Auto-align failed: '+e.message}
-    finally{E=null}
   },30);
 }
-$('eda').onclick=()=>{if(!E)return;const r=E.r;r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};repaint(r);closeEd()};
+$('eda').onclick=()=>{if(!E)return;const r=E.r;r.lay=flat();r.edit={t:E.t.map(o=>({...o})),vis:[...E.vis]};r.sel=-1;repaint(r);cardSync(r);closeEd()};
+
+/* ===== move / resize elements straight in a result card (after Auto-align) ===== */
+const withE=(r,fn)=>{const prev=E;E={r,f:r.file,W:r.s.w,H:r.s.h,sel:-1,drag:null,pan:null,t:r.edit.t,vis:r.edit.vis};try{return fn()}finally{E=prev}};
+function cardPt(r,cv,e){const b=cv.getBoundingClientRect();return{x:(e.clientX-b.left)*r.s.w/b.width,y:(e.clientY-b.top)*r.s.h/b.height}}
+function cardHit(r,p,ed){ // topmost movable element under the pointer (design-sized backgrounds are ignored)
+  ed=ed||r.edit;const L=r.file.lay.list,D=r.file.lay;
+  for(let i=L.length-1;i>=0;i--){
+    if(!ed.vis[i])continue;const l=L[i],T=ed.t[i];
+    if(l.det==='background'||l.det==='decor'||l.det==='hidden')continue;
+    if(l.cv.width>=D.w*0.9&&l.cv.height>=D.h*0.9)continue;
+    const lx=Math.floor((p.x-T.x)/T.k),ly=Math.floor((p.y-T.y)/T.k);
+    if(lx<0||ly<0||lx>=l.cv.width||ly>=l.cv.height)continue;
+    if(l.cv.getContext('2d').getImageData(lx,ly,1,1).data[3]>12)return i;
+  }
+  return -1;
+}
+function prepLayers(r){ // the card as editable layers, placed exactly where the resized image shows them
+  if(!r.file.buf||!ensureLay(r.file))return null;
+  const base=render(r.src,r.s.w,r.s.h,r.ov,true),fg=base._fg;if(!fg)return null;
+  const L=r.file.lay,cover=Math.max(r.s.w/L.w,r.s.h/L.h);
+  return{base,clip:{x:fg.dx,y:fg.dy,w:L.w*fg.k,h:L.h*fg.k},edit:{t:L.list.map(l=>({x:fg.dx+l.left*fg.k,y:fg.dy+l.top*fg.k,k:fg.k,k0:cover})),vis:L.list.map(()=>true)}};
+}
+const corners=q=>[[q.x,q.y],[q.x+q.w,q.y],[q.x,q.y+q.h],[q.x+q.w,q.y+q.h]];
+function selRect(r){const l=r.file.lay.list[r.sel],T=r.edit.t[r.sel],b=tight(l);if(!b)return null;
+  return{x:T.x+b.x0*T.k,y:T.y+b.y0*T.k,w:(b.x1-b.x0)*T.k,h:(b.y1-b.y0)*T.k,b,T,l}}
+function drawSel(r){ // selection box lives on its own overlay canvas, so it never ends up in the exported image
+  const o=r.ov2;if(!o)return;const c=o.getContext('2d');c.clearRect(0,0,o.width,o.height);
+  if(!(r.lay&&r.edit&&r.sel>=0))return;const q=selRect(r);if(!q)return;
+  const u=r.s.w/(r.cv.getBoundingClientRect().width||r.s.w);
+  c.lineWidth=1.5*u;c.strokeStyle='#1d6bf3';c.setLineDash([4*u,3*u]);c.strokeRect(q.x,q.y,q.w,q.h);c.setLineDash([]);c.fillStyle='#fff';
+  for(const[x,y]of corners(q)){c.beginPath();c.rect(x-4*u,y-4*u,8*u,8*u);c.fill();c.stroke()}}
+function cardSync(r){ // slider = zoom of the whole image, or (in layer mode) size of the selected element
+  const sl=r.sl;
+  if(sl){if(r.lay&&r.edit){sl.title='Size of the selected element (click an element first)';sl.max=500;sl.disabled=r.sel<0;if(r.sel>=0){const T=r.edit.t[r.sel];sl.value=Math.round(T.k/T.k0*100)}}
+    else{sl.title='Zoom';sl.max=300;sl.disabled=false;sl.value=Math.round((r.ov?r.ov.z:initOv(r).z)*100)}}
+  drawSel(r);if(r.lp&&r.lp.style.display!=='none')buildLayerList(r);
+}
+function enterLayerMode(r,pre){ // switch a card to layer mode without changing how it looks
+  if(r.lay&&r.edit)return true;pre=pre||prepLayers(r);if(!pre)return false;
+  r.edit=pre.edit;r.base=pre.base;r.clip=pre.clip;r.lay=withE(r,()=>flat(r.base,r.clip));repaint(r);return true}
+function inkOn(r,i,p){const l=r.file.lay.list[i],T=r.edit.t[i],lx=Math.floor((p.x-T.x)/T.k),ly=Math.floor((p.y-T.y)/T.k);
+  return !(lx<0||ly<0||lx>=l.cv.width||ly>=l.cv.height)&&l.cv.getContext('2d').getImageData(lx,ly,1,1).data[3]>12}
+function buildLayerList(r){
+  const lp=r.lp;if(!lp||lp.style.display==='none')return;
+  if(!ensureLay(r.file)){lp.textContent='Could not read the layers of this PSD.';return}
+  const L=r.file.lay.list,vis=r.edit?r.edit.vis:L.map(()=>true);lp.innerHTML='';
+  const hint=document.createElement('div');hint.style.cssText='color:var(--mut,#667085);padding:0 4px 4px';hint.textContent='Untick a layer to hide it. Click a name to select it (then drag, or use the slider to resize).';lp.appendChild(hint);
+  for(let i=L.length-1;i>=0;i--){
+    const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:6px;cursor:pointer'+(r.sel===i?';background:#e6efff':'');
+    const cb=document.createElement('input');cb.type='checkbox';cb.checked=vis[i];cb.onclick=e=>e.stopPropagation();
+    cb.onchange=()=>{if(!enterLayerMode(r)){cb.checked=true;return}r.edit.vis[i]=cb.checked;if(!cb.checked&&r.sel===i)r.sel=-1;cardRedraw(r);cardSync(r)};
+    const nm=document.createElement('span');nm.textContent=L[i].name;nm.style.cssText='flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    row.onclick=()=>{if(!enterLayerMode(r)||!r.edit.vis[i])return;r.sel=i;cardSync(r)};
+    row.append(cb,nm);lp.appendChild(row);
+  }
+}
+function cardRedraw(r){r.lay=withE(r,()=>flat(r.base,r.clip));repaint(r);drawSel(r)}
+function cardSetK(r,i,k){ // resize about the visible centre of the element
+  const q=(r.sel=i,selRect(r)),b=q.b,T=q.T,cx=q.x+q.w/2,cy=q.y+q.h/2;
+  T.k=Math.min(T.k0*5,Math.max(T.k0*0.05,k));T.x=cx-(b.x0+b.x1)/2*T.k;T.y=cy-(b.y0+b.y1)/2*T.k;cardRedraw(r)}
+function cardEvents(r,cv){
+  let drag=null;r.sel=-1;
+  const handleAt=(p)=>{if(!(r.lay&&r.edit&&r.sel>=0))return -1;const q=selRect(r);if(!q)return -1;
+    const u=r.s.w/cv.getBoundingClientRect().width;let n=-1;corners(q).forEach(([x,y],i)=>{if(Math.abs(p.x-x)<=9*u&&Math.abs(p.y-y)<=9*u)n=i});return n};
+  cv.onpointerdown=e=>{
+    if(r.lay&&r.edit){const p=cardPt(r,cv,e),hd=handleAt(p);
+      if(hd>=0){const q=selRect(r),c={x:q.x+q.w/2,y:q.y+q.h/2};cv.setPointerCapture(e.pointerId);drag={size:true,c,d0:Math.hypot(p.x-c.x,p.y-c.y)||1,k0:q.T.k};return}
+      let i=cardHit(r,p);if(i<0&&r.sel>=0&&inkOn(r,r.sel,p))i=r.sel;     // the selected layer stays draggable even when it is huge
+      if(i<0){if(r.sel>=0){r.sel=-1;cardSync(r)}return}
+      if(r.sel!==i){r.sel=i;cardSync(r)}cv.setPointerCapture(e.pointerId);drag={i,p};cv.style.cursor='grabbing';return}
+    if(!r.lay&&r.file.buf){const pre=prepLayers(r);
+      if(pre){const p=cardPt(r,cv,e),i=cardHit(r,p,pre.edit);
+        if(i>=0){enterLayerMode(r,pre);r.sel=i;cardSync(r);cv.setPointerCapture(e.pointerId);drag={i,p};cv.style.cursor='grabbing';return}}}
+    if(r.lay)return;cv.setPointerCapture(e.pointerId);if(!r.ov)r.ov=initOv(r);drag={pan:{x:e.clientX,y:e.clientY}}};
+  cv.onpointermove=e=>{
+    if(!drag){if(r.lay&&r.edit){const p=cardPt(r,cv,e),hd=handleAt(p);cv.style.cursor=hd>=0?(hd===0||hd===3?'nwse-resize':'nesw-resize'):(cardHit(r,p)>=0||(r.sel>=0&&inkOn(r,r.sel,p)))?'grab':'default'}return}
+    if(drag.pan){const k=r.s.w/cv.getBoundingClientRect().width;r.ov.x+=(e.clientX-drag.pan.x)*k/r.s.w;r.ov.y+=(e.clientY-drag.pan.y)*k/r.s.h;drag.pan={x:e.clientX,y:e.clientY};repaint(r);return}
+    const p=cardPt(r,cv,e);
+    if(drag.size){cardSetK(r,r.sel,drag.k0*(Math.hypot(p.x-drag.c.x,p.y-drag.c.y)/drag.d0));if(r.sl)r.sl.value=Math.round(r.edit.t[r.sel].k/r.edit.t[r.sel].k0*100);return}
+    const T=r.edit.t[drag.i];T.x+=p.x-drag.p.x;T.y+=p.y-drag.p.y;drag.p=p;cardRedraw(r)};
+  cv.onpointerup=cv.onpointercancel=()=>{if(drag&&!drag.pan&&!drag.size)cv.style.cursor='grab';drag=null};
+  cv.tabIndex=0;cv.style.outline='none';cv.addEventListener('pointerdown',()=>cv.focus({preventScroll:true}));
+  cv.addEventListener('keydown',e=>{if((e.key==='Delete'||e.key==='Backspace')&&r.lay&&r.edit&&r.sel>=0){e.preventDefault();r.edit.vis[r.sel]=false;r.sel=-1;cardRedraw(r);cardSync(r)}});
+  cv.addEventListener('wheel',e=>{if(!(e.shiftKey&&r.lay&&r.edit))return;const i=cardHit(r,cardPt(r,cv,e));if(i<0)return;
+    e.preventDefault();r.sel=i;cardSetK(r,i,r.edit.t[i].k*((e.deltaY||e.deltaX)<0?1.06:1/1.06));cardSync(r)},{passive:false});
+}
 function repaint(r){
   const n=r.lay||render(r.src,r.s.w,r.s.h,r.ov),c=r.cv.getContext('2d');c.clearRect(0,0,r.s.w,r.s.h);c.drawImage(n,0,0);
+  r.cv.title=r.lay&&r.edit?'Click an element to select it \u00b7 drag to move \u00b7 drag a corner (or use the slider) to resize':(r.file&&r.file.buf?'Click an element to move or resize it (Delete hides it) \u00b7 drag empty space to reposition the image \u00b7 slider zooms':'Drag to reposition \u00b7 use the slider to zoom');
   clearTimeout(r.t);r.t=setTimeout(async()=>{const b=await blobOf(r);r.kb.textContent=(b.size/1024).toFixed(1)+' KB'},250);
 }
 function initOv(r){ // starting point that matches the auto result
@@ -477,24 +615,25 @@ $('go').onclick=async()=>{
       const cv=render(f.cv,s.w,s.h);
       const r={name:`${f.name}_${s.w}x${s.h}.${ext}`,cv,src:f.cv,file:f,s,ov:null,fmt,q};results.push(r);
       cv.style.cssText=`display:block;max-width:100%;height:auto;width:${s.w>=420?420:Math.round(s.w*1.3)}px;border:1px solid var(--bd);cursor:grab;touch-action:none`;
-      const d=document.createElement('div');d.className='o';d.appendChild(cv);
+      const d=document.createElement('div');d.className='o';
+      const wrap=document.createElement('div');wrap.style.cssText='position:relative;display:inline-block;line-height:0';wrap.appendChild(cv);
+      const ov2=document.createElement('canvas');ov2.width=s.w;ov2.height=s.h;ov2.style.cssText='position:absolute;left:1px;top:1px;width:calc(100% - 2px);height:calc(100% - 2px);pointer-events:none';wrap.appendChild(ov2);r.ov2=ov2;d.appendChild(wrap);
       const m=document.createElement('div');m.className='m';
-      m.innerHTML=`<span>${s.w}×${s.h} · <b class="kb"></b></span><input type="range" min="10" max="300" value="${Math.round(initOv(r).z*100)}" style="width:80px" title="Zoom">${f.buf?'<button class="g ed">Edit layers</button><button class=\"g aal\" title=\"Auto-arrange this size\">Auto-align</button>':''}<button class="g rs">Reset</button><button class="g sv">Save</button>`;
+      m.innerHTML=`<span>${s.w}×${s.h} · <b class="kb"></b></span><input type="range" min="10" max="300" value="${Math.round(initOv(r).z*100)}" style="width:80px" title="Zoom">${f.buf?'<button class=\"g aal\" title=\"Auto-arrange this size\">Auto-align</button><button class=\"g lyr\" title=\"Show, hide or select individual layers\">Layers</button>':''}<button class="g rs">Reset</button><button class="g sv">Save</button>`;
       d.appendChild(m);g.appendChild(d);
-      r.kb=m.querySelector('.kb');const sl=m.querySelector('input');
+      r.kb=m.querySelector('.kb');const sl=m.querySelector('input');r.sl=sl;
       blobOf(r).then(b=>r.kb.textContent=(b.size/1024).toFixed(1)+' KB');
-      sl.oninput=()=>{if(r.lay)return;if(!r.ov)r.ov=initOv(r);r.ov.z=sl.value/100;repaint(r)};
-      m.querySelector('.rs').onclick=()=>{r.ov=null;r.lay=null;r.edit=null;sl.value=Math.round(initOv(r).z*100);repaint(r)};
+      sl.oninput=()=>{if(r.lay&&r.edit){if(r.sel>=0)cardSetK(r,r.sel,r.edit.t[r.sel].k0*sl.value/100);return}if(r.lay)return;if(!r.ov)r.ov=initOv(r);r.ov.z=sl.value/100;repaint(r)};
+      m.querySelector('.rs').onclick=()=>{r.ov=null;r.lay=null;r.edit=null;r.base=null;r.clip=null;r.sel=-1;repaint(r);cardSync(r)};
       m.querySelector('.sv').onclick=async()=>{const b=await blobOf(r),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=r.name;a.click()};
-      const eb=m.querySelector('.ed');if(eb)eb.onclick=()=>openEd(r);
       const ab=m.querySelector('.aal');if(ab)ab.onclick=()=>autoOne(r);
-      let st=null;
-      cv.onpointerdown=e=>{if(r.lay)return;cv.setPointerCapture(e.pointerId);if(!r.ov)r.ov=initOv(r);st={x:e.clientX,y:e.clientY}};
-      cv.onpointermove=e=>{if(!st)return;const k=s.w/cv.getBoundingClientRect().width;r.ov.x+=(e.clientX-st.x)*k/s.w;r.ov.y+=(e.clientY-st.y)*k/s.h;st={x:e.clientX,y:e.clientY};repaint(r)};
-      cv.onpointerup=cv.onpointercancel=()=>{st=null};
+      const lb=m.querySelector('.lyr');if(lb){const lp=document.createElement('div');lp.style.cssText='display:none;margin-top:8px;max-height:230px;overflow:auto;border-top:1px solid var(--bd);padding-top:6px;font-size:12px';d.appendChild(lp);r.lp=lp;
+        lb.onclick=()=>{lp.style.display=lp.style.display==='none'?'block':'none';buildLayerList(r)}}
+      cardEvents(r,cv);
+      if(f.buf&&$('aag').checked){$('st').textContent=`Auto-aligning ${f.name} ${s.w}\u00d7${s.h}\u2026`;await new Promise(z=>setTimeout(z));try{autoApply(r)}catch(e){console.error(e)}}
     }
   }
-  $('st').textContent=`Done — ${results.length} images. Drag any preview to reposition it; use its slider to zoom.`;$('go').disabled=false;$('zip').disabled=false;
+  $('st').textContent=`Done — ${results.length} images. PSD sizes: click an element to move or resize it (or press Auto-align to rearrange everything). Drag empty space to reposition the whole image; the slider zooms.`;$('go').disabled=false;$('zip').disabled=false;
 };
 $('zip').onclick=async()=>{
   if(typeof JSZip==='undefined')return alert('ZIP library failed to load');
