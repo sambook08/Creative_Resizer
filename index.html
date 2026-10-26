@@ -726,7 +726,7 @@ function cardHit(r,p,ed){ // topmost movable element under the pointer (design-s
   ed=ed||r.edit;const L=r.file.lay.list,D=r.file.lay;
   for(let i=L.length-1;i>=0;i--){
     if(!ed.vis[i])continue;const l=L[i],T=ed.t[i];
-    if(l.det==='background'||l.det==='decor'||l.det==='hidden')continue;
+    if(l.lock||(l.det==='background'&&l.lock===undefined)||l.det==='decor'||l.det==='hidden')continue;
     if(!l.img&&l.cv.width>=D.w*0.9&&l.cv.height>=D.h*0.9)continue;
     const lx=Math.floor((p.x-T.x)/T.k),ly=Math.floor((p.y-T.y)/T.k);
     if(lx<0||ly<0||lx>=l.cv.width||ly>=l.cv.height)continue;
@@ -817,6 +817,114 @@ function applyCta(f,cut){
     if(enterLayerMode(r)){n++;cardSync(r)}}
   $('st').textContent=n?`CTA added to ${n} size${n>1?'s':''}. Click it to move or resize it; drag the image to reposition it. The original stays in the image.`:'CTA saved, but this resize mode (Stretch) cannot show it. Switch the resize mode and Generate again.';
 }
+/* ===== cut several elements out of a flat JPG / PNG ===== */
+function dil(a,w,h,g){if(g<=0)return a;const t=new Uint8Array(a.length),o=new Uint8Array(a.length),P=new Int32Array(Math.max(w,h)+1);
+  for(let y=0;y<h;y++){let q=0;P[0]=0;for(let x=0;x<w;x++){q+=a[y*w+x];P[x+1]=q}for(let x=0;x<w;x++)t[y*w+x]=P[Math.min(w,x+g+1)]-P[Math.max(0,x-g)]>0?1:0}
+  for(let x=0;x<w;x++){let q=0;P[0]=0;for(let y=0;y<h;y++){q+=t[y*w+x];P[y+1]=q}for(let y=0;y<h;y++)o[y*w+x]=P[Math.min(h,y+g+1)]-P[Math.max(0,y-g)]>0?1:0}
+  return o}
+function workOf(cv){const sc=Math.min(1,640/Math.max(cv.width,cv.height)),w=Math.max(8,Math.round(cv.width*sc)),h=Math.max(8,Math.round(cv.height*sc)),t=docCv(w,h),x=t.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(cv,0,0,w,h);return{w,h,sc,d:x.getImageData(0,0,w,h).data}}
+function findBg(W,sens){ // grow from the border: smooth gradients pass, hard edges stop
+  const{w,h,d}=W,N=w*h,bg=new Uint8Array(N),st=new Int32Array(N),bord=[];let sp=0;
+  for(let x=0;x<w;x++)bord.push(x,(h-1)*w+x);for(let y=1;y<h-1;y++)bord.push(y*w,y*w+w-1);
+  const med=[0,1,2].map(c=>{const v=bord.map(p=>d[p*4+c]).sort((a,b)=>a-b);return v[v.length>>1]});
+  for(const p of bord){const o=p*4;if(!bg[p]&&Math.abs(d[o]-med[0])+Math.abs(d[o+1]-med[1])+Math.abs(d[o+2]-med[2])<=120){bg[p]=1;st[sp++]=p}}
+  while(sp){const p=st[--sp],x=p%w,y=(p/w)|0,o=p*4;
+    for(let k=0;k<4;k++){const q=k===0?(x>0?p-1:-1):k===1?(x<w-1?p+1:-1):k===2?(y>0?p-w:-1):(y<h-1?p+w:-1);if(q<0||bg[q])continue;const u=q*4;
+      if(Math.abs(d[u]-d[o])+Math.abs(d[u+1]-d[o+1])+Math.abs(d[u+2]-d[o+2])>sens)continue;bg[q]=1;st[sp++]=q}}
+  return bg}
+function findComps(W,bg,grp){
+  const{w,h}=W,N=w*h,fg=new Uint8Array(N);for(let i=0;i<N;i++)fg[i]=bg[i]?0:1;
+  const dl=dil(fg,w,h,grp),lab=new Int32Array(N).fill(-1),st=new Int32Array(N),all=[];
+  for(let s0=0;s0<N;s0++){if(!dl[s0]||lab[s0]>=0)continue;const id=all.length,pts=[];let sp=0;st[sp++]=s0;lab[s0]=id;
+    while(sp){const p=st[--sp],x=p%w,y=(p/w)|0;pts.push(p);for(let k=0;k<4;k++){const q=k===0?(x>0?p-1:-1):k===1?(x<w-1?p+1:-1):k===2?(y>0?p-w:-1):(y<h-1?p+w:-1);if(q<0||!dl[q]||lab[q]>=0)continue;lab[q]=id;st[sp++]=q}}
+    const m=new Uint8Array(N);let n=0,x0=w,y0=h,x1=-1,y1=-1;
+    for(const p of pts)if(fg[p]){m[p]=1;n++;const x=p%w,y=(p/w)|0;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y}
+    all.push({m,n,x0,y0,x1,y1,on:true})}
+  const keep=all.filter(c=>c.n>=N*0.0006&&c.x1-c.x0>=5&&c.y1-c.y0>=5&&c.n<N*0.6).sort((a,b)=>a.y0-b.y0||a.x0-b.x0);
+  keep.big=all.some(c=>c.n>=N*0.6);return keep}
+function manualComp(W,b,mode,sens){ // a box the user dragged, in work pixels
+  const{w,h,d}=W,N=w*h,x0=Math.max(0,Math.round(b.x0)),y0=Math.max(0,Math.round(b.y0)),x1=Math.min(w-1,Math.round(b.x1)),y1=Math.min(h-1,Math.round(b.y1)),m=new Uint8Array(N);
+  if(x1-x0<4||y1-y0<4)return null;
+  if(mode==='box'){const r=Math.min(x1-x0,y1-y0)*0.2;for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const cx=Math.min(Math.max(x,x0+r),x1-r),cy=Math.min(Math.max(y,y0+r),y1-r);if(Math.hypot(x-cx,y-cy)<=r)m[y*w+x]=1}}
+  else{const ring=[];for(let x=x0;x<=x1;x++)ring.push(y0*w+x,y1*w+x);for(let y=y0;y<=y1;y++)ring.push(y*w+x0,y*w+x1);
+    const mc=[0,1,2].map(c=>{const v=ring.map(p=>d[p*4+c]).sort((a,b)=>a-b);return v[v.length>>1]}),tol=sens*3+20,fl=new Uint8Array(N),st=new Int32Array(N);let sp=0;
+    const near=p=>Math.abs(d[p*4]-mc[0])+Math.abs(d[p*4+1]-mc[1])+Math.abs(d[p*4+2]-mc[2])<=tol;
+    for(const p of ring)if(!fl[p]&&near(p)){fl[p]=1;st[sp++]=p}
+    while(sp){const p=st[--sp],x=p%w,y=(p/w)|0;for(let k=0;k<4;k++){const X=x+(k===0?-1:k===1?1:0),Y=y+(k===2?-1:k===3?1:0);if(X<x0||X>x1||Y<y0||Y>y1)continue;const q=Y*w+X;if(fl[q]||!near(q))continue;fl[q]=1;st[sp++]=q}}
+    for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)if(!fl[y*w+x])m[y*w+x]=1}
+  let n=0;for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)n+=m[y*w+x];
+  return n<20?null:{m,n,x0,y0,x1,y1,on:true,manual:true}}
+function inpaint(W,hole){ // fill the cut-out areas from the surrounding background
+  const{w,h,d}=W,N=w*h,A=new Float32Array(N*3),S=new Float32Array(N),out=new Uint8ClampedArray(d);
+  const add=(p,q,dist)=>{const k=1/dist,o=q*4;A[p*3]+=d[o]*k;A[p*3+1]+=d[o+1]*k;A[p*3+2]+=d[o+2]*k;S[p]+=k};
+  for(let y=0;y<h;y++){let l=-1;for(let x=0;x<w;x++){const p=y*w+x;if(!hole[p])l=x;else if(l>=0)add(p,y*w+l,x-l)}l=-1;for(let x=w-1;x>=0;x--){const p=y*w+x;if(!hole[p])l=x;else if(l>=0)add(p,y*w+l,l-x)}}
+  for(let x=0;x<w;x++){let l=-1;for(let y=0;y<h;y++){const p=y*w+x;if(!hole[p])l=y;else if(l>=0)add(p,l*w+x,y-l)}l=-1;for(let y=h-1;y>=0;y--){const p=y*w+x;if(!hole[p])l=y;else if(l>=0)add(p,l*w+x,l-y)}}
+  for(let p=0;p<N;p++)if(hole[p]&&S[p]){out[p*4]=A[p*3]/S[p];out[p*4+1]=A[p*3+1]/S[p];out[p*4+2]=A[p*3+2]/S[p];out[p*4+3]=255}
+  for(let it=0;it<2;it++){const cp=new Uint8ClampedArray(out);for(let p=0;p<N;p++){if(!hole[p])continue;const x=p%w,y=(p/w)|0;let r=0,g=0,b=0,n=0;
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const X=x+dx,Y=y+dy;if(X<0||Y<0||X>=w||Y>=h)continue;const o=(Y*w+X)*4;r+=cp[o];g+=cp[o+1];b+=cp[o+2];n++}
+    out[p*4]=r/n;out[p*4+1]=g/n;out[p*4+2]=b/n}}
+  return out}
+function buildElems(f,W,sel){
+  const{w,h}=W,N=w*h,iw=f.cv.width/w,ih=f.cv.height/h,hole=new Uint8Array(N);
+  for(const c of sel)for(let p=0;p<N;p++)if(c.m[p])hole[p]=1;
+  const hd=dil(hole,w,h,2),fill=inpaint(W,hd),bg=docCv(f.cv.width,f.cv.height),bx=bg.getContext('2d');bx.drawImage(f.cv,0,0);
+  const fc=docCv(w,h);fc.getContext('2d').putImageData(new ImageData(fill,w,h),0,0);
+  const hc=docCv(w,h),hx=hc.getContext('2d'),hi=hx.createImageData(w,h);for(let p=0;p<N;p++)hi.data[p*4+3]=hd[p]?255:0;hx.putImageData(hi,0,0);
+  const tmp=docCv(bg.width,bg.height),tx=tmp.getContext('2d');tx.imageSmoothingQuality='high';tx.drawImage(fc,0,0,bg.width,bg.height);tx.globalCompositeOperation='destination-in';tx.drawImage(hc,0,0,bg.width,bg.height);bx.drawImage(tmp,0,0);
+  const list=[{name:'Background (locked)',img:true,det:'background',lock:true,cv:bg,left:0,top:0,op:1,bm:'source-over'}];
+  [...sel].sort((a,b)=>b.n-a.n).forEach(c=>{ // big pieces go behind small ones; reorder later in Layers
+    const X0=Math.max(0,c.x0-1),Y0=Math.max(0,c.y0-1),X1=Math.min(w-1,c.x1+1),Y1=Math.min(h-1,c.y1+1),bw=X1-X0+1,bh=Y1-Y0+1,
+      mc=docCv(bw,bh),mx=mc.getContext('2d'),mi=mx.createImageData(bw,bh);
+    for(let y=0;y<bh;y++)for(let x=0;x<bw;x++)if(c.m[(Y0+y)*w+X0+x])mi.data[(y*bw+x)*4+3]=255;mx.putImageData(mi,0,0);
+    const fx=Math.round(X0*iw),fy=Math.round(Y0*ih),fw=Math.max(1,Math.min(f.cv.width-fx,Math.round(bw*iw))),fh=Math.max(1,Math.min(f.cv.height-fy,Math.round(bh*ih))),
+      cv=docCv(fw,fh),cx=cv.getContext('2d');cx.imageSmoothingQuality='high';cx.drawImage(f.cv,fx,fy,fw,fh,0,0,fw,fh);cx.globalCompositeOperation='destination-in';cx.drawImage(mc,0,0,fw,fh);
+    list.push({name:'Element '+c.no+(c.manual?' (cut by hand)':''),cv,left:fx,top:fy,op:1,bm:'source-over',ext:true})});
+  return list}
+function applyElems(f,list){
+  f.lay={w:f.cv.width,h:f.cv.height,list,ext:true};f.layFail=false;let n=0;
+  for(const r of results){if(r.file!==f)continue;r.lay=null;r.edit=null;r.base=null;r.clip=null;r.sel=-1;
+    const b=r.m&&r.m.querySelector('.lyr');if(b)b.style.display='';if(enterLayerMode(r)){n++;cardSync(r)}}
+  $('st').textContent=n?`${list.length-1} elements cut out on ${n} size${n>1?'s':''}. Click one to move or resize it. Open Layers to reorder (front/back), hide or lock them. The background is locked.`:'Elements saved, but this resize mode (Stretch) cannot show them. Switch the resize mode and Generate again.'}
+function moveLayer(r,i,dir){const f=r.file,L=f.lay.list,j=i+dir;
+  if(L[i].det==='background'||j<0||j>=L.length||(L[j].det==='background'&&dir<0))return;
+  [L[i],L[j]]=[L[j],L[i]];
+  for(const c of results){if(c.file!==f||!c.edit)continue;const e=c.edit;[e.t[i],e.t[j]]=[e.t[j],e.t[i]];[e.vis[i],e.vis[j]]=[e.vis[j],e.vis[i]];
+    if(c.sel===i)c.sel=j;else if(c.sel===j)c.sel=i;cardRedraw(c);cardSync(c)}
+  buildLayerList(r)}
+function openElemPicker(f){
+  const modal=$('ctam');modal.innerHTML='';modal.style.display='flex';
+  const panel=document.createElement('div');panel.className='c';panel.style.cssText='max-width:1000px;width:100%;max-height:96vh;overflow:auto;margin:0';
+  panel.innerHTML='<h2>Cut out elements</h2><p class="s" style="margin:0 0 8px">Boxed pieces are detected elements: click a box to include or exclude it, or drag on the image to cut your own. The green tint is the background. It stays locked underneath, with the cut-out areas filled in.</p>';
+  const dsc=Math.min(1,940/f.cv.width,500/f.cv.height),DW=Math.round(f.cv.width*dsc),DH=Math.round(f.cv.height*dsc),W=workOf(f.cv);
+  const wrap=document.createElement('div');wrap.style.cssText='position:relative;display:inline-block;line-height:0;max-width:100%';
+  const mc=docCv(DW,DH);mc.getContext('2d').drawImage(f.cv,0,0,DW,DH);const oc=docCv(DW,DH);oc.style.cssText='position:absolute;left:0;top:0;cursor:crosshair;touch-action:none';wrap.append(mc,oc);panel.appendChild(wrap);
+  const row=document.createElement('div');row.className='row';row.style.marginTop='10px';
+  row.innerHTML='<label class="k">Background tolerance <input type="range" id="esens" min="4" max="40" value="14"></label><label class="k">Group nearby pieces <input type="range" id="egrp" min="0" max="40" value="8"></label><label class="k">Cut by hand <select id="emd"><option value="color">remove surrounding colour</option><option value="box">keep the whole box (rounded)</option></select></label><span id="enote" class="s"></span>';
+  panel.appendChild(row);
+  const row2=document.createElement('div');row2.className='row';row2.style.marginTop='10px';
+  row2.innerHTML='<button id="eok" disabled>Cut out</button><button class="g" id="eall">Select all</button><button class="g" id="enone">Select none</button><button class="g" id="eno">Cancel</button>';panel.appendChild(row2);modal.appendChild(panel);
+  const q=id=>panel.querySelector('#'+id);let auto=[],man=[],tint=null,note='',drag=null,tmr=null;const all=()=>auto.concat(man);
+  const recompute=()=>{const bg=findBg(W,+q('esens').value);auto=findComps(W,bg,+q('egrp').value);
+    const t=docCv(W.w,W.h),tc=t.getContext('2d'),im=tc.createImageData(W.w,W.h);let nb=0;for(let p=0;p<bg.length;p++)if(bg[p]){nb++;im.data[p*4+1]=200;im.data[p*4+3]=70}tc.putImageData(im,0,0);tint=t;
+    note=auto.big?'A large connected area was left out. Drag boxes around the pieces you want.':nb<bg.length*0.12?'The background looks complex, so automatic detection may miss pieces. Drag boxes around what you want.':auto.length?'':'Nothing detected. Try a higher tolerance, or drag boxes.';draw()};
+  const draw=(band)=>{all().forEach((c,i)=>c.no=i+1);const c=oc.getContext('2d'),kx=DW/W.w,ky=DH/W.h;c.clearRect(0,0,DW,DH);if(tint)c.drawImage(tint,0,0,DW,DH);
+    all().forEach(a=>{c.lineWidth=2;c.setLineDash(a.on?[]:[5,4]);c.strokeStyle=a.on?'#2f5bea':'#999';c.strokeRect(a.x0*kx,a.y0*ky,(a.x1-a.x0+1)*kx,(a.y1-a.y0+1)*ky);c.setLineDash([]);c.fillStyle=a.on?'#2f5bea':'#999';c.fillRect(a.x0*kx,Math.max(0,a.y0*ky-16),20,16);c.fillStyle='#fff';c.font='bold 12px sans-serif';c.fillText(String(a.no),a.x0*kx+5,Math.max(12,a.y0*ky-4))});
+    if(band){c.strokeStyle='#ffb020';c.lineWidth=2;c.setLineDash([6,4]);c.strokeRect(band.x,band.y,band.w,band.h);c.setLineDash([])}
+    const n=all().filter(a=>a.on).length;q('eok').disabled=!n;q('eok').textContent='Cut out '+n+' element'+(n===1?'':'s');q('enote').textContent=note};
+  const pos=e=>{const b=oc.getBoundingClientRect();return{x:(e.clientX-b.left)*DW/b.width,y:(e.clientY-b.top)*DH/b.height}};
+  oc.onpointerdown=e=>{oc.setPointerCapture(e.pointerId);drag={a:pos(e),b:pos(e)}};
+  oc.onpointermove=e=>{if(!drag)return;drag.b=pos(e);draw({x:Math.min(drag.a.x,drag.b.x),y:Math.min(drag.a.y,drag.b.y),w:Math.abs(drag.a.x-drag.b.x),h:Math.abs(drag.a.y-drag.b.y)})};
+  oc.onpointerup=()=>{if(!drag)return;const a=drag.a,b=drag.b;drag=null;const kx=W.w/DW,ky=W.h/DH;
+    if(Math.hypot(a.x-b.x,a.y-b.y)<6){const hits=all().filter(c=>a.x*kx>=c.x0&&a.x*kx<=c.x1&&a.y*ky>=c.y0&&a.y*ky<=c.y1&&c.m[Math.round(a.y*ky)*W.w+Math.round(a.x*kx)]).sort((p,r)=>p.n-r.n);
+      const t=hits[0]||all().filter(c=>a.x*kx>=c.x0&&a.x*kx<=c.x1&&a.y*ky>=c.y0&&a.y*ky<=c.y1).sort((p,r)=>p.n-r.n)[0];if(t)t.on=!t.on;draw();return}
+    const c=manualComp(W,{x0:Math.min(a.x,b.x)*kx,y0:Math.min(a.y,b.y)*ky,x1:Math.max(a.x,b.x)*kx,y1:Math.max(a.y,b.y)*ky},q('emd').value,+q('esens').value);
+    if(c)man.push(c);else note='That box was too small or empty.';draw()};
+  const later=()=>{clearTimeout(tmr);tmr=setTimeout(recompute,120)};q('esens').oninput=q('egrp').oninput=later;
+  q('eall').onclick=()=>{all().forEach(c=>c.on=true);draw()};q('enone').onclick=()=>{all().forEach(c=>c.on=false);draw()};
+  q('eno').onclick=()=>{modal.style.display='none';modal.innerHTML=''};
+  q('eok').onclick=()=>{const sel=all().filter(c=>c.on);if(!sel.length)return;q('eok').disabled=true;q('eok').textContent='Working\u2026';
+    setTimeout(()=>{let list;try{list=buildElems(f,W,sel)}catch(err){alert('Could not cut the elements: '+err.message);q('eok').disabled=false;return}modal.style.display='none';modal.innerHTML='';applyElems(f,list)},30)};
+  recompute()}
 function openCtaPicker(f){
   const modal=$('ctam');modal.innerHTML='';modal.style.display='flex';
   const panel=document.createElement('div');panel.className='c';panel.style.cssText='max-width:980px;width:100%;max-height:96vh;overflow:auto;margin:0';
@@ -870,7 +978,11 @@ function buildLayerList(r){
     cb.onchange=()=>{if(!enterLayerMode(r)){cb.checked=true;return}r.edit.vis[i]=cb.checked;if(!cb.checked&&r.sel===i)r.sel=-1;cardRedraw(r);cardSync(r)};
     const nm=document.createElement('span');nm.textContent=L[i].name;nm.style.cssText='flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     row.onclick=()=>{if(!enterLayerMode(r)||!r.edit.vis[i])return;r.sel=i;cardSync(r)};
-    row.append(cb,nm);lp.appendChild(row);
+    row.append(cb,nm);
+    if(r.file.lay.ext){const mk=(t,ti,fn)=>{const b=document.createElement('button');b.className='g';b.textContent=t;b.title=ti;b.style.cssText='padding:0 6px;font-size:12px';b.onclick=e=>{e.stopPropagation();fn()};return b};
+      const lk=L[i].lock||(L[i].det==='background'&&L[i].lock===undefined);
+      row.append(mk(lk?'\u{1F512}':'\u{1F513}',lk?'Locked: cannot be dragged. Click to unlock':'Click to lock in place',()=>{L[i].lock=!lk;buildLayerList(r)}),mk('\u25B2','Bring forward (in front of other elements)',()=>moveLayer(r,i,1)),mk('\u25BC','Send backward (behind other elements)',()=>moveLayer(r,i,-1)))}
+    lp.appendChild(row);
   }
 }
 function cardRedraw(r,quick){
@@ -1059,15 +1171,15 @@ async function runGenerate(autoAlign){
       const wrap=document.createElement('div');wrap.style.cssText='position:relative;display:inline-block;line-height:0';wrap.appendChild(cv);
       const ov2=document.createElement('canvas');ov2.width=s.w;ov2.height=s.h;ov2.style.cssText='position:absolute;left:1px;top:1px;width:calc(100% - 2px);height:calc(100% - 2px);pointer-events:none';wrap.appendChild(ov2);r.ov2=ov2;d.appendChild(wrap);
       const m=document.createElement('div');m.className='m';
-      m.innerHTML=`<span>${s.w}×${s.h} · <b class="kb"></b></span><input type="range" min="10" max="300" value="${Math.round(initOv(r).z*100)}" style="width:80px" title="Zoom">${f.buf?'<button class=\"g aal\" title=\"Auto-arrange this size\">Auto-align</button><button class=\"g lyr\" title=\"Show, hide or select individual layers\">Layers</button>':'<button class=\"g cta\" title=\"Pick the CTA button in this image to get a movable, resizable copy of it\">CTA</button>'}<button class="g rs">Reset</button><button class="g sv">Save</button>`;
+      m.innerHTML=`<span>${s.w}×${s.h} · <b class="kb"></b></span><input type="range" min="10" max="300" value="${Math.round(initOv(r).z*100)}" style="width:80px" title="Zoom">${f.buf?'<button class=\"g aal\" title=\"Auto-arrange this size\">Auto-align</button><button class=\"g lyr\" title=\"Show, hide or select individual layers\">Layers</button>':'<button class=\"g cta\" title=\"Pick the CTA button in this image to get a movable, resizable copy of it\">CTA</button><button class=\"g elm\" title=\"Detect several elements in this image, cut them out and rearrange them. The background is rebuilt and locked.\">Elements</button><button class=\"g lyr\" style=\"display:none\" title=\"Reorder, hide or lock the cut-out elements\">Layers</button>'}<button class="g rs">Reset</button><button class="g sv">Save</button>`;
       d.appendChild(m);if(wantImg)g.appendChild(d);else r.hid=true;
-      r.kb=m.querySelector('.kb');const sl=m.querySelector('input');r.sl=sl;
+      r.kb=m.querySelector('.kb');const sl=m.querySelector('input');r.sl=sl;r.m=m;
       blobOf(r).then(b=>r.kb.textContent=(b.size/1024).toFixed(1)+' KB');
       sl.oninput=()=>{if(r.lay&&r.edit){if(r.sel>=0)cardSetK(r,r.sel,r.edit.t[r.sel].k0*sl.value/100);return}if(r.lay)return;if(!r.ov)r.ov=initOv(r);r.ov.z=sl.value/100;repaintQuick(r)};
       m.querySelector('.rs').onclick=()=>{r.ov=null;r.lay=null;r.edit=null;r.base=null;r.clip=null;r.sel=-1;repaint(r);cardSync(r)};
       m.querySelector('.sv').onclick=async()=>{const b=await blobOf(r),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=r.name;a.click()};
       const ab=m.querySelector('.aal');if(ab)ab.onclick=()=>autoOne(r);
-      const cb=m.querySelector('.cta');if(cb)cb.onclick=()=>openCtaPicker(f);
+      const cb=m.querySelector('.cta');if(cb)cb.onclick=()=>openCtaPicker(f);const eb2=m.querySelector('.elm');if(eb2)eb2.onclick=()=>openElemPicker(f);
       const lb=m.querySelector('.lyr');if(lb){const lp=document.createElement('div');lp.style.cssText='display:none;margin-top:8px;max-height:230px;overflow:auto;border-top:1px solid var(--bd);padding-top:6px;font-size:12px';d.appendChild(lp);r.lp=lp;
         lb.onclick=()=>{lp.style.display=lp.style.display==='none'?'block':'none';buildLayerList(r)}}
       cardEvents(r,cv);
