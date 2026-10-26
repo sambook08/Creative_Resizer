@@ -94,9 +94,9 @@ button:disabled{opacity:.5;cursor:default}
 <select id="tall"><option value="extend">Fit + extend edges (seamless, default)</option><option value="edge">Fit + edge-color gradient</option><option value="fill">Crop a vertical slice</option><option value="blur">Fit + blurred background</option><option value="same">Use mode above</option></select>
 <label class="k">Crop position left <input id="tx" type="range" min="0" max="100" value="50"> right</label></div></div>
 
-<div class="row" style="margin-bottom:14px"><button id="go" disabled>Generate</button>
+<div class="row" style="margin-bottom:14px"><button id="go" disabled>Generate</button><button id="goaa" disabled>Auto Align &amp; Generate</button><span class="tip" tabindex="0" data-tip="Same as Generate, but PSDs are also rearranged to fit each size: decoration behind text is hidden, the main image is placed beside the text and the footer band is kept. If a PSD uses layer effects the tool cannot reproduce (gradient overlays, shadows), a warning tells you some colours may differ. Images (JPG/PNG) are not rearranged. You can also press Auto-align on any single card.">i</span>
 <button id="zip" class="g" disabled>Download all (ZIP)</button>
-<label class="k"><input type="checkbox" id="aag"> Auto-align PSDs when generating</label><span class="tip" tabindex="0" data-tip="For PSDs, rearranges the layers to fit each size as it is generated: it hides decoration behind text, places the main image and keeps the footer band. If a PSD uses layer effects the tool cannot reproduce, the plain resize is kept for that file. You can also press Auto-align on any single card.">i</span><span id="st"></span></div>
+<span id="st"></span></div>
 <div id="out"></div>
 <div id="ctam" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:60;align-items:center;justify-content:center;padding:12px"></div>
 </div>
@@ -126,7 +126,7 @@ const DEF_ON=new Set();   // no sizes are pre-selected: the user ticks what the 
 let sizes=[];GROUPS.forEach(g=>g.s.forEach(([w,h])=>sizes.push({w,h,g:g.n,on:DEF_ON.has(w+'x'+h)})));
 const sOpen={};let sFq='';
 let files=[],results=[];
-function syncGo(){const out=$('oi').checked||$('og').checked,ok=files.length>0&&sizes.some(z=>z.on)&&out;$('go').disabled=!ok;$('go').title=ok?'':(!out?'Tick Generate image and/or Generate GIF':(files.length?'Tick at least one size first':'Upload a file and tick at least one size'));}
+function syncGo(){const out=$('oi').checked||$('og').checked,ok=files.length>0&&sizes.some(z=>z.on)&&out;$('go').disabled=!ok;$('goaa').disabled=!ok;$('goaa').title=ok?'Generate, then rearrange each PSD size to fit':'';$('go').title=ok?'':(!out?'Tick Generate image and/or Generate GIF':(files.length?'Tick at least one size first':'Upload a file and tick at least one size'));}
 function drawSizes(){
   const root=$('sz');root.innerHTML='';
   const q=sFq.trim().toLowerCase().replace(/[\u00d7\s]+/g,'x'),vis=z=>!q||(z.w+'x'+z.h).includes(q)||String(z.w).includes(q);
@@ -1035,11 +1035,11 @@ async function addGif(r,grid){
   await buildGif(r);
 }
 let gifList=[];
-$('go').onclick=async()=>{
+async function runGenerate(autoAlign){
   const act=sizes.filter(s=>s.on);if(!act.length)return alert('Select at least one size');
   const notes=[];const wantImg=$('oi').checked,wantGif=$('og').checked;if(!wantImg&&!wantGif)return alert('Tick Generate image and/or Generate GIF');
   for(const g of gifList)if(g.url)URL.revokeObjectURL(g.url);gifList=[];
-  $('out').innerHTML='';results=[];$('go').disabled=true;
+  $('out').innerHTML='';results=[];$('go').disabled=true;$('goaa').disabled=true;
   const fmt=$('fmt').value,ext=fmt==='png'?'png':'jpg',q=Math.min(100,Math.max(40,+$('q').value||90))/100;
   for(const f of files){
     const h=document.createElement('div');h.className='f';h.dataset.fid=f.id;h.textContent=f.name;$('out').appendChild(h);
@@ -1071,14 +1071,16 @@ $('go').onclick=async()=>{
       const lb=m.querySelector('.lyr');if(lb){const lp=document.createElement('div');lp.style.cssText='display:none;margin-top:8px;max-height:230px;overflow:auto;border-top:1px solid var(--bd);padding-top:6px;font-size:12px';d.appendChild(lp);r.lp=lp;
         lb.onclick=()=>{lp.style.display=lp.style.display==='none'?'block':'none';buildLayerList(r)}}
       cardEvents(r,cv);
-      if(f.buf&&$('aag').checked){$('st').textContent=`Auto-aligning ${f.name} ${s.w}\u00d7${s.h}\u2026`;await new Promise(z=>setTimeout(z));
-        try{if(ensureLay(f)&&layerFidelity(f).bad){if(!notes.includes(f.name))notes.push(f.name)}else autoApply(r)}catch(e){console.error(e)}}
+      if(f.buf&&autoAlign){$('st').textContent=`Auto-aligning ${f.name} ${s.w}\u00d7${s.h}\u2026`;await new Promise(z=>setTimeout(z));
+        try{if(ensureLay(f)){autoApply(r);if(layerFidelity(f).bad&&!notes.includes(f.name))notes.push(f.name)}}catch(e){console.error(e)}}
       if(wantGif){$('st').textContent=`Building GIF ${f.name} ${s.w}\u00d7${s.h}\u2026`;await new Promise(z=>setTimeout(z));try{await addGif(r,g)}catch(e){console.error(e);const t=document.createElement('div');t.className='o';t.textContent='GIF failed: '+e.message;g.appendChild(t)}}
     }
     }
   }
-  $('st').textContent=`Done — ${wantImg?results.length+' image'+(results.length>1?'s':''):''}${wantImg&&wantGif?' and ':''}${wantGif?gifList.length+' GIF'+(gifList.length>1?'s':''):''}. ${wantImg?'PSD sizes: click an element to move or resize it (or press Auto-align to rearrange everything). Drag empty space to reposition the whole image; the slider zooms.':'Tick Generate image as well if you want to adjust the artwork before the GIF is made.'}${notes.length?' \u26a0 Auto-align was skipped for '+notes.join(', ')+' because it uses layer effects the tool cannot reproduce; the plain resize is shown instead.':''}`;syncGo();$('zip').disabled=false;
-};
+  $('st').textContent=`Done — ${wantImg?results.length+' image'+(results.length>1?'s':''):''}${wantImg&&wantGif?' and ':''}${wantGif?gifList.length+' GIF'+(gifList.length>1?'s':''):''}. ${wantImg?'PSD sizes: click an element to move or resize it (or press Auto-align to rearrange everything). Drag empty space to reposition the whole image; the slider zooms.':'Tick Generate image as well if you want to adjust the artwork before the GIF is made.'}${notes.length?' \u26a0 '+notes.join(', ')+' uses layer effects (gradient overlays, shadows...) the tool cannot reproduce, so some colours may differ from your saved preview (for example a red shape may look green). Use Generate for an exact copy, or fix individual cards with Reset.':''}${autoAlign&&!files.some(f=>f.buf)?' Auto-align only applies to PSD files, so your images were resized normally.':''}`;syncGo();$('zip').disabled=false;
+}
+$('go').onclick=()=>runGenerate(false);
+$('goaa').onclick=()=>runGenerate(true);
 $('zip').onclick=async()=>{
   if(typeof JSZip==='undefined')return alert('ZIP library failed to load');
   const z=new JSZip();for(const r of results)if(!r.hid)z.file(r.name,await blobOf(r));for(const g of gifList)if(g.blob)z.file(g.name,g.blob);
