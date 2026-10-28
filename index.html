@@ -73,6 +73,10 @@
   .btn-gif:hover:not(:disabled) { background: var(--gif-hover); }
   .btn-client { background: var(--client-btn); color: #fff; }
   .btn-client:hover:not(:disabled) { background: var(--client-hover); }
+  .btn-img { background: #0f766e; color: #fff; }
+  .btn-img:hover:not(:disabled) { background: #115e59; }
+  .btn-img2 { background: #0e7490; color: #fff; }
+  .btn-img2:hover:not(:disabled) { background: #155e75; }
   .btn-success { background: var(--success); color: #fff; }
   .btn-outline { background: #fff; border: 1px solid var(--border); color: #374151; }
   .btn-outline:hover:not(:disabled) { background: #f1f5f9; }
@@ -274,9 +278,13 @@
 
     <!-- PRIMARY ACTION DECK -->
     <div style="display:flex;flex-direction:column;gap:6px">
-      <button class="btn-primary" id="btnGen" style="width:100%" disabled>Generate</button>
-      <button class="btn-accent" id="btnGenAA" style="width:100%" disabled title="Decomposes layers and auto-aligns layout to each banner ratio">
-        Generate &amp; Auto Align
+      <button class="btn-primary" id="btnGen" style="width:100%" disabled title="Works on PSD files only">Generate (PSD)</button>
+      <button class="btn-accent" id="btnGenAA" style="width:100%" disabled title="PSD files only: decomposes layers and auto-aligns the layout to each banner ratio">
+        Generate &amp; Auto Align (PSD)
+      </button>
+      <button class="btn-img" id="btnGenImg" style="width:100%" disabled title="Works on JPG / PNG / WebP files only: plain resize">Generate (JPG/PNG)</button>
+      <button class="btn-img2" id="btnGenImgAA" style="width:100%" disabled title="JPG / PNG / WebP only: finds the separate elements (text, buttons, characters), cuts them out and auto-aligns them for each banner ratio">
+        Generate &amp; Auto Align (JPG/PNG)
       </button>
       <button class="btn-gif" id="btnGenGIF" style="width:100%" disabled title="Builds animated GIFs from your approved aligned static layouts">
         Generate GIFs
@@ -420,6 +428,9 @@
     </div>
   </main>
 
+  <div class="modal-overlay" id="elm"></div>
+  <div class="multi-popover" id="layPop"></div>
+
   <!-- FINE TUNE MODAL -->
   <div class="modal-overlay" id="ed">
     <div class="modal-box">
@@ -462,7 +473,7 @@
   const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   // one global handler closes the GIF layer picker (replaces one listener per GIF card)
   document.addEventListener('click', e => {
-    if (e.target.closest('.multi-popover') || e.target.closest('.gif-multi-btn')) return;
+    if (e.target.closest('.multi-popover') || e.target.closest('.gif-multi-btn, .pop-btn')) return;
     document.querySelectorAll('.multi-popover.open').forEach(p => p.classList.remove('open'));
   });
   addEventListener('scroll', e => {
@@ -575,9 +586,10 @@
   $('fi').onchange = e => loadFiles(e.target.files);
 
   function syncGo() {
-    const ok = files.length > 0 && sizes.some(z => z.on);
-    $('btnGen').disabled = !ok;
-    $('btnGenAA').disabled = !ok;
+    const sz = sizes.some(z => z.on), ok = files.length > 0 && sz;
+    const hasPsd = files.some(f => f.kind === 'psd'), hasImg = files.some(f => f.kind === 'img');
+    $('btnGen').disabled = $('btnGenAA').disabled = !(hasPsd && sz);
+    $('btnGenImg').disabled = $('btnGenImgAA').disabled = !(hasImg && sz);
     $('btnGenGIF').disabled = !(ok && results.length > 0);
     $('btnExportProof').disabled = !(results.length > 0 || gifList.length > 0);
   }
@@ -594,7 +606,7 @@
           cv = document.createElement('canvas'); cv.width = bm.width; cv.height = bm.height;
           cv.getContext('2d').drawImage(bm, 0, 0);
         }
-        files.push({ id: ++fileSeq, name: f.name.replace(/\.[^.]+$/, ''), cv, buf });
+        files.push({ id: ++fileSeq, name: f.name.replace(/\.[^.]+$/, ''), cv, buf, kind: n.endsWith('.psd') ? 'psd' : 'img' });
       } catch (e) {
         alert(f.name + ': ' + e.message);
       }
@@ -1276,7 +1288,7 @@
     if (!r.edit || !r.file.lay) return -1;
     const L = r.file.lay.list, ed = r.edit;
     for (let i = L.length - 1; i >= 0; i--) {
-      if (!ed.vis[i]) continue;
+      if (!ed.vis[i] || L[i].lock) continue;
       const l = L[i], T = ed.t[i];
       const lx = Math.floor((p.x - T.x) / T.k), ly = Math.floor((p.y - T.y) / T.k);
       if (lx >= 0 && ly >= 0 && lx < l.cv.width && ly < l.cv.height) {
@@ -1670,16 +1682,272 @@
     return targetList;
   }
 
-  async function runGenerate(autoAlign) {
+/* =========================================================================
+     JPG / PNG: FIND SEPARATE ELEMENTS, CUT THEM OUT, AND TREAT THEM LIKE PSD LAYERS
+     ========================================================================= */
+  const setBusy = b => { ['btnGen', 'btnGenAA', 'btnGenImg', 'btnGenImgAA'].forEach(id => $(id).disabled = true); if (!b) syncGo(); };
+
+  function dil(a, w, h, g) {
+    if (g <= 0) return a;
+    const t = new Uint8Array(a.length), o = new Uint8Array(a.length), P = new Int32Array(Math.max(w, h) + 1);
+    for (let y = 0; y < h; y++) { let q = 0; P[0] = 0; for (let x = 0; x < w; x++) { q += a[y * w + x]; P[x + 1] = q; } for (let x = 0; x < w; x++) t[y * w + x] = P[Math.min(w, x + g + 1)] - P[Math.max(0, x - g)] > 0 ? 1 : 0; }
+    for (let x = 0; x < w; x++) { let q = 0; P[0] = 0; for (let y = 0; y < h; y++) { q += t[y * w + x]; P[y + 1] = q; } for (let y = 0; y < h; y++) o[y * w + x] = P[Math.min(h, y + g + 1)] - P[Math.max(0, y - g)] > 0 ? 1 : 0; }
+    return o;
+  }
+  function workOf(cv) {
+    const sc = Math.min(1, 640 / Math.max(cv.width, cv.height)), w = Math.max(8, Math.round(cv.width * sc)), h = Math.max(8, Math.round(cv.height * sc));
+    const t = docCv(w, h), x = t.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(cv, 0, 0, w, h);
+    return { w, h, sc, d: x.getImageData(0, 0, w, h).data };
+  }
+  // grow the background in from the image border: smooth gradients pass, hard edges stop
+  function findBg(W, sens) {
+    const { w, h, d } = W, N = w * h, bg = new Uint8Array(N), st = new Int32Array(N), bord = []; let sp = 0;
+    for (let x = 0; x < w; x++) bord.push(x, (h - 1) * w + x); for (let y = 1; y < h - 1; y++) bord.push(y * w, y * w + w - 1);
+    const med = [0, 1, 2].map(c => { const v = bord.map(p => d[p * 4 + c]).sort((a, b) => a - b); return v[v.length >> 1]; });
+    for (const p of bord) { const o = p * 4; if (!bg[p] && Math.abs(d[o] - med[0]) + Math.abs(d[o + 1] - med[1]) + Math.abs(d[o + 2] - med[2]) <= 120) { bg[p] = 1; st[sp++] = p; } }
+    while (sp) {
+      const p = st[--sp], x = p % w, y = (p / w) | 0, o = p * 4;
+      for (let k = 0; k < 4; k++) {
+        const q = k === 0 ? (x > 0 ? p - 1 : -1) : k === 1 ? (x < w - 1 ? p + 1 : -1) : k === 2 ? (y > 0 ? p - w : -1) : (y < h - 1 ? p + w : -1);
+        if (q < 0 || bg[q]) continue; const u = q * 4;
+        if (Math.abs(d[u] - d[o]) + Math.abs(d[u + 1] - d[o + 1]) + Math.abs(d[u + 2] - d[o + 2]) > sens) continue;
+        bg[q] = 1; st[sp++] = q;
+      }
+    }
+    return bg;
+  }
+  function findComps(W, bg, grp) {
+    const { w, h } = W, N = w * h, fg = new Uint8Array(N); for (let i = 0; i < N; i++) fg[i] = bg[i] ? 0 : 1;
+    const dl = dil(fg, w, h, grp), lab = new Int32Array(N).fill(-1), st = new Int32Array(N), all = [];
+    for (let s0 = 0; s0 < N; s0++) {
+      if (!dl[s0] || lab[s0] >= 0) continue;
+      const id = all.length, pts = []; let sp = 0; st[sp++] = s0; lab[s0] = id;
+      while (sp) {
+        const p = st[--sp], x = p % w, y = (p / w) | 0; pts.push(p);
+        for (let k = 0; k < 4; k++) {
+          const q = k === 0 ? (x > 0 ? p - 1 : -1) : k === 1 ? (x < w - 1 ? p + 1 : -1) : k === 2 ? (y > 0 ? p - w : -1) : (y < h - 1 ? p + w : -1);
+          if (q < 0 || !dl[q] || lab[q] >= 0) continue; lab[q] = id; st[sp++] = q;
+        }
+      }
+      const m = new Uint8Array(N); let n = 0, x0 = w, y0 = h, x1 = -1, y1 = -1;
+      for (const p of pts) if (fg[p]) { m[p] = 1; n++; const x = p % w, y = (p / w) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      all.push({ m, n, x0, y0, x1, y1, on: true });
+    }
+    const keep = all.filter(c => c.n >= N * 0.0006 && c.x1 - c.x0 >= 5 && c.y1 - c.y0 >= 5 && c.n < N * 0.6);
+    // join words on the same line (e.g. "SAMPLE" + "GAME") into one text element
+    const isTxt = c => (c.x1 - c.x0 + 1) / (c.y1 - c.y0 + 1) >= 1.2 && c.n / ((c.x1 - c.x0 + 1) * (c.y1 - c.y0 + 1)) < 0.62 && c.n < N * 0.08;
+    for (let merged = true; merged;) {
+      merged = false;
+      for (let i = 0; i < keep.length && !merged; i++) for (let j = i + 1; j < keep.length && !merged; j++) {
+        const a = keep[i], b = keep[j]; if (!isTxt(a) || !isTxt(b)) continue;
+        const ha = a.y1 - a.y0 + 1, hb = b.y1 - b.y0 + 1, ov = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) + 1, gap = Math.max(a.x0, b.x0) - Math.min(a.x1, b.x1);
+        if (ov >= 0.7 * Math.min(ha, hb) && gap <= 1.3 * Math.max(ha, hb)) {
+          for (let p = 0; p < N; p++) if (b.m[p]) a.m[p] = 1;
+          a.n += b.n; a.x0 = Math.min(a.x0, b.x0); a.y0 = Math.min(a.y0, b.y0); a.x1 = Math.max(a.x1, b.x1); a.y1 = Math.max(a.y1, b.y1);
+          keep.splice(j, 1); merged = true;
+        }
+      }
+    }
+    keep.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+    keep.big = all.some(c => c.n >= N * 0.6); return keep;
+  }
+  // a box dragged by hand (work pixels): either remove the colour around it, or keep the whole box with rounded corners
+  function manualComp(W, b, mode, sens) {
+    const { w, h, d } = W, N = w * h, x0 = Math.max(0, Math.round(b.x0)), y0 = Math.max(0, Math.round(b.y0)), x1 = Math.min(w - 1, Math.round(b.x1)), y1 = Math.min(h - 1, Math.round(b.y1)), m = new Uint8Array(N);
+    if (x1 - x0 < 4 || y1 - y0 < 4) return null;
+    if (mode === 'box') {
+      const r = Math.min(x1 - x0, y1 - y0) * 0.2;
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const cx = Math.min(Math.max(x, x0 + r), x1 - r), cy = Math.min(Math.max(y, y0 + r), y1 - r); if (Math.hypot(x - cx, y - cy) <= r) m[y * w + x] = 1; }
+    } else {
+      const ring = []; for (let x = x0; x <= x1; x++) ring.push(y0 * w + x, y1 * w + x); for (let y = y0; y <= y1; y++) ring.push(y * w + x0, y * w + x1);
+      const mc = [0, 1, 2].map(c => { const v = ring.map(p => d[p * 4 + c]).sort((a, b) => a - b); return v[v.length >> 1]; }), tol = sens * 3 + 20, fl = new Uint8Array(N), st = new Int32Array(N); let sp = 0;
+      const near = p => Math.abs(d[p * 4] - mc[0]) + Math.abs(d[p * 4 + 1] - mc[1]) + Math.abs(d[p * 4 + 2] - mc[2]) <= tol;
+      for (const p of ring) if (!fl[p] && near(p)) { fl[p] = 1; st[sp++] = p; }
+      while (sp) {
+        const p = st[--sp], x = p % w, y = (p / w) | 0;
+        for (let k = 0; k < 4; k++) { const X = x + (k === 0 ? -1 : k === 1 ? 1 : 0), Y = y + (k === 2 ? -1 : k === 3 ? 1 : 0); if (X < x0 || X > x1 || Y < y0 || Y > y1) continue; const q = Y * w + X; if (fl[q] || !near(q)) continue; fl[q] = 1; st[sp++] = q; }
+      }
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (!fl[y * w + x]) m[y * w + x] = 1;
+    }
+    let n = 0; for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) n += m[y * w + x];
+    return n < 20 ? null : { m, n, x0, y0, x1, y1, on: true, manual: true };
+  }
+  // fill the areas the elements used to cover from the background around them
+  function inpaint(W, hole) {
+    const { w, h, d } = W, N = w * h, A = new Float32Array(N * 3), S = new Float32Array(N), out = new Uint8ClampedArray(d);
+    const add = (p, q, dist) => { const k = 1 / dist, o = q * 4; A[p * 3] += d[o] * k; A[p * 3 + 1] += d[o + 1] * k; A[p * 3 + 2] += d[o + 2] * k; S[p] += k; };
+    for (let y = 0; y < h; y++) { let l = -1; for (let x = 0; x < w; x++) { const p = y * w + x; if (!hole[p]) l = x; else if (l >= 0) add(p, y * w + l, x - l); } l = -1; for (let x = w - 1; x >= 0; x--) { const p = y * w + x; if (!hole[p]) l = x; else if (l >= 0) add(p, y * w + l, l - x); } }
+    for (let x = 0; x < w; x++) { let l = -1; for (let y = 0; y < h; y++) { const p = y * w + x; if (!hole[p]) l = y; else if (l >= 0) add(p, l * w + x, y - l); } l = -1; for (let y = h - 1; y >= 0; y--) { const p = y * w + x; if (!hole[p]) l = y; else if (l >= 0) add(p, l * w + x, l - y); } }
+    for (let p = 0; p < N; p++) if (hole[p] && S[p]) { out[p * 4] = A[p * 3] / S[p]; out[p * 4 + 1] = A[p * 3 + 1] / S[p]; out[p * 4 + 2] = A[p * 3 + 2] / S[p]; out[p * 4 + 3] = 255; }
+    for (let it = 0; it < 2; it++) {
+      const cp = new Uint8ClampedArray(out);
+      for (let p = 0; p < N; p++) {
+        if (!hole[p]) continue; const x = p % w, y = (p / w) | 0; let r = 0, g = 0, b = 0, n = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const X = x + dx, Y = y + dy; if (X < 0 || Y < 0 || X >= w || Y >= h) continue; const o = (Y * w + X) * 4; r += cp[o]; g += cp[o + 1]; b += cp[o + 2]; n++; }
+        out[p * 4] = r / n; out[p * 4 + 1] = g / n; out[p * 4 + 2] = b / n;
+      }
+    }
+    return out;
+  }
+  // names that Auto-Align understands: big subjects are heroes, text is content, buttons are CTAs
+  function labelComps(list, W) {
+    const cnt = { Hero: 0, Button: 0, Text: 0, Graphic: 0 };
+    list.forEach(c => {
+      const wc = c.x1 - c.x0 + 1, hc = c.y1 - c.y0 + 1, fill = c.n / (wc * hc), area = c.n / (W.w * W.h), asp = wc / hc;
+      let t = 'Graphic';
+      if (area >= 0.10) t = 'Hero';
+      else if (fill >= 0.62 && asp >= 1.6 && asp <= 8 && wc >= 0.12 * W.w) t = 'Button';
+      else if (asp >= 1.8 && fill < 0.62 && hc <= 0.2 * W.h) t = 'Text';
+      c.name = t + ' ' + (++cnt[t]) + (c.manual ? ' (by hand)' : ''); c.txt = t === 'Text';
+    });
+  }
+  // background (holes filled in, locked) + one unit per selected element, in the same shape PSD layers use
+  function buildImageUnits(f, W, sel) {
+    labelComps(sel, W);
+    const { w, h } = W, N = w * h, iw = f.cv.width / w, ih = f.cv.height / h, hole = new Uint8Array(N);
+    for (const c of sel) for (let p = 0; p < N; p++) if (c.m[p]) hole[p] = 1;
+    const hd = dil(hole, w, h, 2), fill = inpaint(W, hd), bg = docCv(f.cv.width, f.cv.height), bx = bg.getContext('2d'); bx.drawImage(f.cv, 0, 0);
+    if (sel.length) {
+      const fc = docCv(w, h); fc.getContext('2d').putImageData(new ImageData(fill, w, h), 0, 0);
+      const hc = docCv(w, h), hx = hc.getContext('2d'), hi = hx.createImageData(w, h); for (let p = 0; p < N; p++) hi.data[p * 4 + 3] = hd[p] ? 255 : 0; hx.putImageData(hi, 0, 0);
+      const tmp = docCv(bg.width, bg.height), tx = tmp.getContext('2d'); tx.imageSmoothingQuality = 'high';
+      tx.drawImage(fc, 0, 0, bg.width, bg.height); tx.globalCompositeOperation = 'destination-in'; tx.drawImage(hc, 0, 0, bg.width, bg.height); bx.drawImage(tmp, 0, 0);
+    }
+    const list = [{ name: 'Background', txt: false, cv: bg, left: 0, top: 0, op: 1, bm: 'source-over', grp: false, lock: true }];
+    [...sel].sort((a, b) => b.n - a.n).forEach(c => { // big pieces go behind small ones
+      const X0 = Math.max(0, c.x0 - 1), Y0 = Math.max(0, c.y0 - 1), X1 = Math.min(w - 1, c.x1 + 1), Y1 = Math.min(h - 1, c.y1 + 1), bw = X1 - X0 + 1, bh = Y1 - Y0 + 1;
+      const mc = docCv(bw, bh), mx = mc.getContext('2d'), mi = mx.createImageData(bw, bh);
+      for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) if (c.m[(Y0 + y) * w + X0 + x]) mi.data[(y * bw + x) * 4 + 3] = 255; mx.putImageData(mi, 0, 0);
+      const fx = Math.round(X0 * iw), fy = Math.round(Y0 * ih), fw = Math.max(1, Math.min(f.cv.width - fx, Math.round(bw * iw))), fh = Math.max(1, Math.min(f.cv.height - fy, Math.round(bh * ih)));
+      const cv = docCv(fw, fh), cx = cv.getContext('2d'); cx.imageSmoothingQuality = 'high'; cx.drawImage(f.cv, fx, fy, fw, fh, 0, 0, fw, fh); cx.globalCompositeOperation = 'destination-in'; cx.drawImage(mc, 0, 0, fw, fh);
+      list.push({ name: c.name, txt: c.txt, cv, left: fx, top: fy, op: 1, bm: 'source-over', grp: false });
+    });
+    return { w: f.cv.width, h: f.cv.height, list };
+  }
+  // automatic pass used by "Generate & Auto Align (JPG/PNG)"; returns how many elements were found
+  async function prepareImage(f) {
+    if (f.lay) return f.lay.list.length - 1;
+    const W = workOf(f.cv), comps = findComps(W, findBg(W, 14), 8);
+    f.lay = buildImageUnits(f, W, comps); f.buf = f.buf || 'cut';
+    return comps.length;
+  }
+
+  // review / refine the detection for one image, then rebuild its cards
+  function openElemPicker(f) {
+    const modal = $('elm'); modal.innerHTML = ''; modal.style.display = 'flex';
+    const panel = document.createElement('div');
+    panel.style.cssText = 'background:#fff;border-radius:12px;padding:14px;max-width:1000px;width:100%;max-height:96vh;overflow:auto';
+    panel.innerHTML = '<div style="font-weight:800;font-size:14px;margin-bottom:4px">Cut out elements — ' + esc(f.name) + '</div><p style="color:#64748b;margin:0 0 8px">Boxed pieces are detected elements: click a box to include or exclude it, or drag on the image to cut your own. The green tint is the background; it stays locked and the cut-out areas are filled in.</p>';
+    const dsc = Math.min(1, 940 / f.cv.width, 480 / f.cv.height), DW = Math.round(f.cv.width * dsc), DH = Math.round(f.cv.height * dsc), W = workOf(f.cv);
+    const wrap = document.createElement('div'); wrap.style.cssText = 'position:relative;display:inline-block;line-height:0;max-width:100%';
+    const mc = docCv(DW, DH); mc.getContext('2d').drawImage(f.cv, 0, 0, DW, DH);
+    const oc = docCv(DW, DH); oc.style.cssText = 'position:absolute;left:0;top:0;cursor:crosshair;touch-action:none'; wrap.append(mc, oc); panel.appendChild(wrap);
+    const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:10px';
+    row.innerHTML = '<label>Background tolerance <input type="range" id="esens" min="4" max="40" value="14"></label><label>Group nearby pieces <input type="range" id="egrp" min="0" max="40" value="8"></label><label>Cut by hand <select id="emd"><option value="color">remove surrounding colour</option><option value="box">keep the whole box (rounded)</option></select></label><span id="enote" style="color:#b45309"></span>';
+    const row2 = document.createElement('div'); row2.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px';
+    row2.innerHTML = '<button class="btn-primary" id="eok" disabled>Cut out</button><button class="btn-outline" id="eall">Select all</button><button class="btn-outline" id="enone">Select none</button><button class="btn-outline" id="eno">Cancel</button>';
+    panel.append(row, row2); modal.appendChild(panel);
+    const q = id => panel.querySelector('#' + id); let auto = [], man = [], tint = null, note = '', drag = null, tmr = null; const all = () => auto.concat(man);
+    const recompute = () => {
+      const bg = findBg(W, +q('esens').value); auto = findComps(W, bg, +q('egrp').value);
+      const t = docCv(W.w, W.h), tc = t.getContext('2d'), im = tc.createImageData(W.w, W.h); let nb = 0;
+      for (let p = 0; p < bg.length; p++) if (bg[p]) { nb++; im.data[p * 4 + 1] = 200; im.data[p * 4 + 3] = 70; } tc.putImageData(im, 0, 0); tint = t;
+      note = auto.big ? 'A large connected area was left out. Drag boxes around the pieces you want.' : nb < bg.length * 0.12 ? 'The background looks complex, so detection may miss pieces. Drag boxes around what you want.' : auto.length ? '' : 'Nothing detected. Try a higher tolerance, or drag boxes.';
+      draw();
+    };
+    const draw = band => {
+      labelComps(all(), W);
+      const c = oc.getContext('2d'), kx = DW / W.w, ky = DH / W.h; c.clearRect(0, 0, DW, DH); if (tint) c.drawImage(tint, 0, 0, DW, DH);
+      all().forEach(a => {
+        c.lineWidth = 2; c.setLineDash(a.on ? [] : [5, 4]); c.strokeStyle = a.on ? '#2563eb' : '#94a3b8'; c.strokeRect(a.x0 * kx, a.y0 * ky, (a.x1 - a.x0 + 1) * kx, (a.y1 - a.y0 + 1) * ky); c.setLineDash([]);
+        c.font = 'bold 11px sans-serif'; const tw = c.measureText(a.name).width + 8; c.fillStyle = a.on ? '#2563eb' : '#94a3b8'; c.fillRect(a.x0 * kx, Math.max(0, a.y0 * ky - 15), tw, 15); c.fillStyle = '#fff'; c.fillText(a.name, a.x0 * kx + 4, Math.max(11, a.y0 * ky - 4));
+      });
+      if (band) { c.strokeStyle = '#f59e0b'; c.lineWidth = 2; c.setLineDash([6, 4]); c.strokeRect(band.x, band.y, band.w, band.h); c.setLineDash([]); }
+      const n = all().filter(a => a.on).length; q('eok').disabled = !n; q('eok').textContent = 'Cut out ' + n + ' element' + (n === 1 ? '' : 's') + ' and auto-align'; q('enote').textContent = note;
+    };
+    const pos = e => { const b = oc.getBoundingClientRect(); return { x: (e.clientX - b.left) * DW / b.width, y: (e.clientY - b.top) * DH / b.height }; };
+    oc.onpointerdown = e => { oc.setPointerCapture(e.pointerId); drag = { a: pos(e), b: pos(e) }; };
+    oc.onpointermove = e => { if (!drag) return; drag.b = pos(e); draw({ x: Math.min(drag.a.x, drag.b.x), y: Math.min(drag.a.y, drag.b.y), w: Math.abs(drag.a.x - drag.b.x), h: Math.abs(drag.a.y - drag.b.y) }); };
+    oc.onpointerup = () => {
+      if (!drag) return; const a = drag.a, b = drag.b; drag = null; const kx = W.w / DW, ky = W.h / DH;
+      if (Math.hypot(a.x - b.x, a.y - b.y) < 6) {
+        const inb = c => a.x * kx >= c.x0 && a.x * kx <= c.x1 && a.y * ky >= c.y0 && a.y * ky <= c.y1;
+        const hits = all().filter(c => inb(c) && c.m[Math.round(a.y * ky) * W.w + Math.round(a.x * kx)]).sort((p, r) => p.n - r.n);
+        const t = hits[0] || all().filter(inb).sort((p, r) => p.n - r.n)[0]; if (t) t.on = !t.on; draw(); return;
+      }
+      const c = manualComp(W, { x0: Math.min(a.x, b.x) * kx, y0: Math.min(a.y, b.y) * ky, x1: Math.max(a.x, b.x) * kx, y1: Math.max(a.y, b.y) * ky }, q('emd').value, +q('esens').value);
+      if (c) man.push(c); else note = 'That box was too small or empty.'; draw();
+    };
+    const later = () => { clearTimeout(tmr); tmr = setTimeout(recompute, 120); }; q('esens').oninput = q('egrp').oninput = later;
+    q('eall').onclick = () => { all().forEach(c => c.on = true); draw(); }; q('enone').onclick = () => { all().forEach(c => c.on = false); draw(); };
+    q('eno').onclick = () => { modal.style.display = 'none'; modal.innerHTML = ''; };
+    q('eok').onclick = () => {
+      const sel = all().filter(c => c.on); if (!sel.length) return; q('eok').disabled = true; q('eok').textContent = 'Working…';
+      setTimeout(() => {
+        try { f.lay = buildImageUnits(f, W, sel); f.buf = f.buf || 'cut'; } catch (err) { alert('Could not cut the elements: ' + err.message); q('eok').disabled = false; return; }
+        modal.style.display = 'none'; modal.innerHTML = ''; runGenerate(true, 'img', f);
+      }, 30);
+    };
+    recompute();
+  }
+
+  // Layers popup for cut-out images: hide (this size), lock, and front/back order (all sizes of this image)
+  function reflat(c) {
+    const prev = E; E = { r: c, f: c.file, W: c.s.w, H: c.s.h, t: c.edit.t, vis: c.edit.vis };
+    try { c.lay = flat(); } finally { E = prev; }
+    repaint(c); drawSel(c);
+  }
+  function moveLayer(f, i, dir) {
+    const L = f.lay.list, j = i + dir;
+    if (i < 1 || j < 1 || j >= L.length) return; // the locked background (bottom) stays where it is
+    [L[i], L[j]] = [L[j], L[i]];
+    for (const c of results) {
+      if (c.file !== f || !c.edit) continue; const e = c.edit;
+      [e.t[i], e.t[j]] = [e.t[j], e.t[i]]; [e.vis[i], e.vis[j]] = [e.vis[j], e.vis[i]];
+      if (c.sel === i) c.sel = j; else if (c.sel === j) c.sel = i; reflat(c);
+    }
+  }
+  function openLayerPop(r, btn) {
+    const f = r.file, pop = $('layPop');
+    if (!r.edit) { $('st').textContent = 'Click Auto-align on this card first, then you can hide, lock and reorder its elements.'; return; }
+    const draw = () => {
+      pop.innerHTML = ''; const L = f.lay.list;
+      const mk = (t, ti, fn) => { const b = document.createElement('button'); b.className = 'btn-outline'; b.style.cssText = 'padding:0 5px;font-size:11px'; b.textContent = t; b.title = ti; b.onclick = e => { e.stopPropagation(); fn(); }; return b; };
+      for (let i = L.length - 1; i >= 0; i--) {
+        const rw = document.createElement('div'); rw.className = 'multi-opt';
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = r.edit.vis[i]; cb.onchange = () => { r.edit.vis[i] = cb.checked; reflat(r); };
+        const nm = document.createElement('span'); nm.textContent = L[i].name; nm.style.flex = '1';
+        rw.append(cb, nm, mk(L[i].lock ? '\u{1F512}' : '\u{1F513}', L[i].lock ? 'Locked: cannot be dragged. Click to unlock' : 'Click to lock in place', () => { L[i].lock = !L[i].lock; draw(); }),
+          mk('\u25B2', 'Bring forward (in front of other elements)', () => { moveLayer(f, i, 1); draw(); }), mk('\u25BC', 'Send backward (behind other elements)', () => { moveLayer(f, i, -1); draw(); }));
+        pop.appendChild(rw);
+      }
+    };
+    draw(); document.querySelectorAll('.multi-popover.open').forEach(p => p.classList.remove('open'));
+    const b = btn.getBoundingClientRect(); pop.style.position = 'fixed'; pop.style.right = 'auto'; pop.style.width = '270px'; pop.style.maxHeight = '260px';
+    pop.style.top = (b.bottom + 4) + 'px'; pop.style.left = Math.max(8, Math.min(innerWidth - 278, b.right - 270)) + 'px'; pop.classList.add('open');
+  }
+
+  async function runGenerate(autoAlign, kind, only) {
     const targetList = getActiveTargets();
     if (!targetList) return;
+    const todo = only ? [only] : files.filter(f => f.kind === kind);
+    if (!todo.length) return;
 
-    results = []; $('out').innerHTML = '';
+    // redo only these files: drop their old cards, results and GIFs, keep everything else on screen
+    results = results.filter(r => !todo.includes(r.file));
+    gifList = gifList.filter(g => !todo.includes(g.file));
+    todo.forEach(f => document.querySelectorAll('[data-fid="' + f.id + '"]').forEach(el => el.remove()));
+    $('cntGif').textContent = gifList.length; if (!gifList.length) $('secGif').style.display = 'none';
     $('secStatic').style.display = 'block';
-    $('btnGen').disabled = $('btnGenAA').disabled = true;
-    const fmt = $('fmt').value, ext = (fmt === 'png' ? 'png' : 'jpg');
+    setBusy(true);
+    const fmt = $('fmt').value, ext = (fmt === 'png' ? 'png' : 'jpg'), notes = [];
 
-    for (const f of files) {
+    for (const f of todo) {
+      if (f.kind === 'img' && autoAlign) {
+        $('st').innerHTML = `<span class="dot" style="background:#0e7490"></span>Finding elements in ${esc(f.name)}…`;
+        await new Promise(r => setTimeout(r));
+        if (await prepareImage(f) === 0) notes.push(f.name);
+      }
       for (const s of targetList) {
         $('st').innerHTML = `<span class="dot" style="background:#3b82f6"></span>Rendering ${esc(f.name)} &bull; ${s.w}×${s.h}…`;
         await new Promise(r => setTimeout(r));
@@ -1703,6 +1971,19 @@
           const btnAA = document.createElement('button'); btnAA.className = 'btn-outline'; btnAA.textContent = 'Auto-align';
           btnAA.onclick = () => { autoApply(r); drawSel(r); };
           actDiv.appendChild(btnAA);
+        }
+
+        if (f.kind === 'img') {
+          const btnEl = document.createElement('button'); btnEl.className = 'btn-outline'; btnEl.textContent = 'Elements';
+          btnEl.title = 'Choose which elements to cut out of this image, tune detection, or draw a box around one yourself';
+          btnEl.onclick = () => openElemPicker(f);
+          actDiv.appendChild(btnEl);
+          if (f.lay) {
+            const btnLy = document.createElement('button'); btnLy.className = 'btn-outline pop-btn'; btnLy.textContent = 'Layers';
+            btnLy.title = 'Hide, lock and reorder (front / back) the cut-out elements';
+            btnLy.onclick = e => { e.stopPropagation(); openLayerPop(r, btnLy); };
+            actDiv.appendChild(btnLy);
+          }
         }
 
         const btnEdit = document.createElement('button'); btnEdit.className = 'btn-outline'; btnEdit.textContent = 'Fine-Tune';
@@ -1744,9 +2025,9 @@
     }
 
     $('cntStatic').textContent = results.length;
-    $('st').innerHTML = `<span class="dot"></span>Generated ${results.length} static format(s). You can now generate GIFs from this layout.`;
-    $('btnGen').disabled = $('btnGenAA').disabled = false;
-    syncGo();
+    $('st').innerHTML = `<span class="dot"></span>Generated ${results.length} static format(s). You can now generate GIFs from this layout.` +
+      (notes.length ? ` No separate elements were found in ${notes.map(esc).join(', ')}. Use the Elements button on a card to mark them by hand.` : '');
+    setBusy(false);
     $('btnZip').disabled = false;
   }
 
@@ -1950,8 +2231,10 @@
     syncGo();
   }
 
-  $('btnGen').onclick = () => runGenerate(false);
-  $('btnGenAA').onclick = () => runGenerate(true);
+  $('btnGen').onclick = () => runGenerate(false, 'psd');
+  $('btnGenAA').onclick = () => runGenerate(true, 'psd');
+  $('btnGenImg').onclick = () => runGenerate(false, 'img');
+  $('btnGenImgAA').onclick = () => runGenerate(true, 'img');
   $('btnGenGIF').onclick = () => runGenerateGIFs();
 
   // APPROACH A: EXPORT STANDALONE CLIENT PROOFING PORTAL (.HTML)
