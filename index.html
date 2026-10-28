@@ -348,6 +348,41 @@
         </select>
       </div>
     </div>
+
+    <!-- GIF Settings -->
+    <div style="border-top:1px solid #e2e8f0;padding-top:8px;display:flex;flex-direction:column;gap:6px">
+      <div class="deck-title">GIF Settings</div>
+      <div class="control-row">
+        <span>Length:</span>
+        <select id="gifDur" style="max-width:130px">
+          <option value="1">1 s</option>
+          <option value="1.3" selected>1.3 s (default)</option>
+          <option value="2">2 s</option>
+          <option value="3">3 s</option>
+        </select>
+      </div>
+      <div class="control-row">
+        <span>Plays:</span>
+        <select id="gifLoops" style="max-width:130px">
+          <option value="inf" selected>Loop forever</option>
+          <option value="once">Play once</option>
+          <option value="2">2 times</option>
+          <option value="3">3 times</option>
+          <option value="5">5 times</option>
+        </select>
+      </div>
+      <div class="control-row">
+        <span>Max size:</span>
+        <select id="gifMax" style="max-width:130px">
+          <option value="0" selected>No limit</option>
+          <option value="150">150 KB</option>
+          <option value="300">300 KB</option>
+          <option value="500">500 KB</option>
+          <option value="1000">1 MB</option>
+        </select>
+      </div>
+      <div style="font-size:10px;color:var(--muted)">Applies when GIFs are generated or rebuilt. With a size limit, colours and frames are reduced until the GIF fits.</div>
+    </div>
   </aside>
 
   <!-- MAIN FULL-HEIGHT CANVAS VIEWPORT -->
@@ -1391,17 +1426,10 @@
      MULTI-ELEMENT PER-CARD ANIMATED GIF ENGINE (256-COLOR STUDIO QUALITY)
      ========================================================================= */
 
-  function gifPalette(frames, W, H, ncol) {
-    const cnt = new Uint32Array(32768), sr = new Float64Array(32768), sg = new Float64Array(32768), sb = new Float64Array(32768);
-    const stride = Math.max(1, Math.floor(frames.length * W * H / 350000));
-    frames.forEach((d, fi) => {
-      for (let p = fi % stride; p < W * H; p += stride) {
-        const o = p * 4, r = d[o], g = d[o + 1], b = d[o + 2], k = (r >> 3) << 10 | (g >> 3) << 5 | (b >> 3);
-        cnt[k]++; sr[k] += r; sg[k] += g; sb[k] += b;
-      }
-    });
+  // median-cut palette from a colour histogram (built frame by frame, so frames never all sit in memory)
+  function gifPalette(h, ncol) {
     const ents = [];
-    for (let k = 0; k < 32768; k++) if (cnt[k]) { const c = cnt[k]; ents.push({ c, r: sr[k] / c, g: sg[k] / c, b: sb[k] / c }); }
+    for (let k = 0; k < 32768; k++) if (h.cnt[k]) { const c = h.cnt[k]; ents.push({ c, r: h.sr[k] / c, g: h.sg[k] / c, b: h.sb[k] / c }); }
     const stat = bx => {
       const lo = [255, 255, 255], hi = [0, 0, 0]; let n = 0;
       for (const e of bx) {
@@ -1455,45 +1483,101 @@
     if (nb > 0) out.push(cur & 255);
   }
 
-  function encodeGif(frames, W, H, ncol, delay) {
-    const pal = gifPalette(frames, W, H, Math.max(2, ncol - 1));
-    let k = 1; while ((1 << k) <= pal.length) k++;
-    const b = [], w16 = v => b.push(v & 255, (v >> 8) & 255);
+  // lets the browser breathe between frames without being throttled in background tabs
+  const gifTick = () => new Promise(res => { const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); res(); }; c.port2.postMessage(0); });
+
+  // Fast encoder: colour lookup table instead of a palette search per pixel, and every frame after the
+  // first stores only the rectangle that changed. frame(i) returns RGBA data; ids = frames to use.
+  async function encodeGifFast(frame, ids, W, H, ncol, loops, delayCs, onProg) {
+    const h = { cnt: new Uint32Array(32768), sr: new Float64Array(32768), sg: new Float64Array(32768), sb: new Float64Array(32768) };
+    const stride = Math.max(1, Math.floor(W * H / 40000));
+    for (let j = 0; j < ids.length; j++) {
+      const d = frame(ids[j]);
+      for (let p = j % stride; p < W * H; p += stride) {
+        const o = p * 4, r = d[o], g = d[o + 1], b = d[o + 2], k = (r >> 3) << 10 | (g >> 3) << 5 | (b >> 3);
+        h.cnt[k]++; h.sr[k] += r; h.sg[k] += g; h.sb[k] += b;
+      }
+      if (onProg) onProg(0.4 * (j + 1) / ids.length);
+      await gifTick();
+    }
+    const pal = gifPalette(h, ncol);
+    let k = 1; while ((1 << k) < pal.length) k++;
+    const minCode = Math.max(2, k), b = [], w16 = v => b.push(v & 255, (v >> 8) & 255);
     for (const ch of 'GIF89a') b.push(ch.charCodeAt(0));
     w16(W); w16(H); b.push(0x80 | 0x70 | (k - 1), 0, 0);
-    for (let i = 0; i < (1 << k); i++) {
-      const c = pal[i] || [0, 0, 0]; b.push(c[0], c[1], c[2]);
+    for (let i = 0; i < (1 << k); i++) { const c = pal[i] || [0, 0, 0]; b.push(c[0], c[1], c[2]); }
+    if (loops !== 'once') {
+      b.push(0x21, 0xFF, 0x0B); for (const ch of 'NETSCAPE2.0') b.push(ch.charCodeAt(0));
+      b.push(3, 1); w16(loops === 'inf' ? 0 : Math.max(0, (+loops) - 1)); b.push(0);
     }
-    b.push(0x21, 0xFF, 0x0B); for (const ch of 'NETSCAPE2.0') b.push(ch.charCodeAt(0));
-    b.push(3, 1); w16(0); b.push(0);
-
-    const idx = new Uint8Array(W * H), minCode = Math.max(2, k);
-    for (const d of frames) {
-      for (let y = 0, p = 0, o = 0; y < H; y++) for (let x = 0; x < W; x++, p++, o += 4) {
-        const r = d[o], g = d[o + 1], bl = d[o + 2];
-        let best = 1e9, v = 0;
-        for (let i = 0; i < pal.length; i++) {
-          const dr = pal[i][0] - r, dg = pal[i][1] - g, db = pal[i][2] - bl, dist = dr * dr * 2 + dg * dg * 4 + db * db * 3;
-          if (dist < best) { best = dist; v = i; }
+    const lut = new Int16Array(262144).fill(-1), idx = new Uint8Array(W * H);
+    let prev = null;
+    for (let j = 0; j < ids.length; j++) {
+      const d = frame(ids[j]);
+      for (let p = 0, o = 0; p < W * H; p++, o += 4) {
+        const r = d[o], g = d[o + 1], bl = d[o + 2], key = (r >> 2) << 12 | (g >> 2) << 6 | (bl >> 2);
+        let v = lut[key];
+        if (v < 0) {
+          const cr = (r & 252) | 2, cg = (g & 252) | 2, cb = (bl & 252) | 2; let best = 1e9; v = 0;
+          for (let i = 0; i < pal.length; i++) {
+            const dr = pal[i][0] - cr, dg = pal[i][1] - cg, db = pal[i][2] - cb, dist = dr * dr * 2 + dg * dg * 4 + db * db * 3;
+            if (dist < best) { best = dist; v = i; }
+          }
+          lut[key] = v;
         }
         idx[p] = v;
       }
-      b.push(0x21, 0xF9, 4, 0x00); w16(delay); b.push(0, 0);
-      b.push(0x2C); w16(0); w16(0); w16(W); w16(H); b.push(0);
+      let x0 = 0, y0 = 0, x1 = W, y1 = H, sub = idx;
+      if (prev) {
+        x0 = W; y0 = H; x1 = -1; y1 = -1;
+        for (let y = 0; y < H; y++) {
+          const row = y * W;
+          for (let x = 0; x < W; x++) if (idx[row + x] !== prev[row + x]) { if (x < x0) x0 = x; if (x >= x1) x1 = x + 1; if (y < y0) y0 = y; y1 = y + 1; }
+        }
+        if (x1 < 0) { x0 = 0; y0 = 0; x1 = 1; y1 = 1; }
+        const rw = x1 - x0, rh = y1 - y0; sub = new Uint8Array(rw * rh);
+        for (let y = 0; y < rh; y++) sub.set(idx.subarray((y0 + y) * W + x0, (y0 + y) * W + x0 + rw), y * rw);
+      }
+      if (!prev) prev = new Uint8Array(W * H); prev.set(idx);
+      b.push(0x21, 0xF9, 4, 0x04); w16(delayCs); b.push(0, 0);          // keep previous frame underneath
+      b.push(0x2C); w16(x0); w16(y0); w16(x1 - x0); w16(y1 - y0); b.push(0);
       b.push(minCode);
-      const enc = []; lzwBlocks(idx, minCode, enc);
+      const enc = []; lzwBlocks(sub, minCode, enc);
       for (let i = 0; i < enc.length; i += 255) {
         const len = Math.min(255, enc.length - i);
-        b.push(len); for (let j = 0; j < len; j++) b.push(enc[i + j]);
+        b.push(len); for (let q = 0; q < len; q++) b.push(enc[i + q]);
       }
       b.push(0);
+      if (onProg) onProg(0.4 + 0.6 * (j + 1) / ids.length);
+      await gifTick();
     }
     b.push(0x3B);
     return new Uint8Array(b);
   }
 
-  function generateCardGifFrames(r, targetLayerNames, motionStyle, W, H) {
-    const n = 16, delay = 8;
+  // builds one GIF for a card, using the sidebar GIF settings; steps down colours/frames if a size limit is set
+  async function buildGifBytes(r, names, style, W, H, onProg) {
+    const dur = +$('gifDur').value || 1.3, loops = $('gifLoops').value, maxKB = +$('gifMax').value || 0, delay = 8;
+    let n = Math.max(6, Math.round(dur * 100 / delay));
+    while (n > 8 && W * H * n > 150e6) n--;
+    const gen = generateCardGifFrames(r, names, style, W, H, { n, delay });
+    const cache = (W * H * 4 * n <= 90e6) ? new Map() : null;
+    const frame = i => { if (!cache) return gen.frame(i); if (!cache.has(i)) cache.set(i, gen.frame(i)); return cache.get(i); };
+    const levels = maxKB ? [[256, 1], [128, 1], [64, 1], [64, 2], [32, 2], [32, 3], [16, 3]] : [[256, 1]];
+    let res = null;
+    for (let li = 0; li < levels.length; li++) {
+      const nc = levels[li][0], step = levels[li][1], ids = [];
+      for (let i = 0; i < n; i += step) ids.push(i);
+      const bytes = await encodeGifFast(frame, ids, W, H, nc, loops, delay * step, f => { if (onProg) onProg((li + f) / levels.length); });
+      res = { bytes, nc, step, reduced: nc < 256 || step > 1 };
+      if (!maxKB || bytes.length / 1024 <= maxKB) break;
+    }
+    res.maxKB = maxKB; res.over = maxKB > 0 && res.bytes.length / 1024 > maxKB;
+    return res;
+  }
+
+  function generateCardGifFrames(r, targetLayerNames, motionStyle, W, H, opt = {}) {
+    const n = opt.n || 16, delay = opt.delay || 8;
     const bg = $('bg').value;
     const frames = [];
 
@@ -1503,7 +1587,7 @@
 
     const c = docCv(W, H), x = c.getContext('2d', { willReadFrequently: true });
 
-    for (let i = 0; i < n; i++) {
+    const frame = (i) => {
       const u = i / (n - 1);
       const wave = Math.sin(u * Math.PI * 2);
 
@@ -1557,16 +1641,16 @@
         x.globalAlpha = 1; x.globalCompositeOperation = 'source-over';
       } else {
         const sc = 1 + 0.03 * wave;
-        const baseCv = r.lay || render(r.src, W, H, r.ov);
+        const baseCv = r.cv;
         if (sc < 1.001) x.drawImage(baseCv, 0, 0);
         else {
           const sw = Math.round(W * sc), sh = Math.round(H * sc);
           x.drawImage(baseCv, Math.round((W - sw) / 2), Math.round((H - sh) / 2), sw, sh);
         }
       }
-      frames.push(x.getImageData(0, 0, W, H).data);
-    }
-    return { frames, delay };
+      return x.getImageData(0, 0, W, H).data;
+    };
+    return { n, delay, frame };
   }
 
   /* =========================================================================
@@ -1810,15 +1894,15 @@
       const gObj = { file: f, name: `${f.name}_${W}x${H}${s.isRetina ? '@2x' : ''}.gif`, blob: null, s, kb: '' };
       gifList.push(gObj);
 
-      const rebuildCardGif = async () => {
+      const doRebuild = async () => {
         btnRebuild.disabled = true;
         btnRebuild.textContent = '...';
         await new Promise(res => setTimeout(res));
 
         const curTargets = r.gifTargets;
         const curMotion = selMotion.value;
-        const fr = generateCardGifFrames(r, curTargets, curMotion, W, H);
-        const bytes = encodeGif(fr.frames, W, H, 256, fr.delay);
+        const res = await buildGifBytes(r, curTargets, curMotion, W, H, f => { btnRebuild.textContent = Math.round(f * 100) + '%'; });
+        const bytes = res.bytes;
         const blob = new Blob([bytes], { type: 'image/gif' });
         const kb = (bytes.length / 1024).toFixed(1);
 
@@ -1829,26 +1913,35 @@
         im.src = gObj.url;
 
         kbBadge.textContent = `${kb} KB`;
-        if (bytes.length / 1024 <= 1000) {
-          kbBadge.className = 'card-kb compliant';
-          kbBadge.title = 'DSP Compliant (<1MB)';
-        } else {
-          kbBadge.className = 'card-kb over';
-          kbBadge.title = 'Exceeds 1MB DSP limit';
-        }
+        const limitKB = res.maxKB || 1000, within = !res.over && bytes.length / 1024 <= limitKB;
+        kbBadge.className = 'card-kb ' + (within ? 'compliant' : 'over');
+        kbBadge.textContent = `${kb} KB` + (res.reduced ? ' \u2193' : '');
+        kbBadge.title = (within ? 'Within ' : 'Over ') + (limitKB >= 1000 ? '1 MB' : limitKB + ' KB') +
+          (res.reduced ? ' \u00b7 reduced to ' + res.nc + ' colours' + (res.step > 1 ? ' and every ' + res.step + (res.step === 2 ? 'nd' : 'rd') + ' frame' : '') + ' to fit the limit' : '');
         btnRebuild.disabled = false;
         btnRebuild.textContent = 'Rebuild';
       };
 
-      btnRebuild.onclick = rebuildCardGif;
-      selMotion.onchange = rebuildCardGif;
+      // waits briefly so ticking several layers rebuilds once, and never runs two builds at the same time
+      let rbTimer = null, rbBusy = false, rbAgain = false;
+      const rebuildCardGif = now => {
+        clearTimeout(rbTimer);
+        rbTimer = setTimeout(async () => {
+          if (rbBusy) { rbAgain = true; return; }
+          rbBusy = true;
+          try { do { rbAgain = false; await doRebuild(); } while (rbAgain); } finally { rbBusy = false; }
+        }, now === true ? 0 : 300);
+      };
+      btnRebuild.onclick = () => rebuildCardGif(true);
+      selMotion.onchange = () => rebuildCardGif(true);
 
       btnSave.onclick = () => {
         if (!gObj.blob) return;
         const a = document.createElement('a'); a.href = gObj.url; a.download = gObj.name; a.click();
       };
 
-      await rebuildCardGif();
+      rbBusy = true;
+      try { await doRebuild(); } finally { rbBusy = false; }
     }
 
     $('cntGif').textContent = gifList.length;
