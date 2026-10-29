@@ -259,6 +259,36 @@
   .modal-body { flex: 1; display: flex; overflow: hidden; }
   .modal-viewport { flex: 1; background: #0f172a; position: relative; overflow: hidden; }
   .modal-sidebar { width: 280px; border-left: 1px solid var(--border); padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+
+  /* readability, focus, and the new bits */
+  body { font-size: 14px; }
+  .control-row, select, input[type="text"], input[type="number"], .cat-row { font-size: 12.5px; }
+  .deck-title { font-size: 12px; } .card-kb { font-size: 11.5px; } .card-actions button { font-size: 12px; }
+  [style*="font-size:9px"] { font-size: 10.5px !important; }
+  [style*="font-size:10px"] { font-size: 11.5px !important; }
+  [style*="font-size:11px"] { font-size: 12.5px !important; }
+  :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+  .card.active-card { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.35); }
+  .btn-link { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 7px; background: #0f172a; color: #fff; text-decoration: none; white-space: nowrap; }
+  .btn-link:hover { background: #1e293b; }
+  #dropOv { display: none; position: fixed; inset: 0; z-index: 200; align-items: center; justify-content: center; background: rgba(29,78,216,.75); color: #fff; font-size: 22px; font-weight: 800; pointer-events: none; }
+  html[data-theme="dark"] { color-scheme: dark; --bg:#0b1220; --card:#111827; --text:#e5e7eb; --muted:#94a3b8; --border:#243044; }
+  html[data-theme="dark"] body { background: #0b1220; color: #e5e7eb; }
+  html[data-theme="dark"] .sidebar, html[data-theme="dark"] .sub-header, html[data-theme="dark"] .card, html[data-theme="dark"] .cat-row, html[data-theme="dark"] .modal-box, html[data-theme="dark"] .multi-popover { background: #111827; }
+  html[data-theme="dark"] .card-header, html[data-theme="dark"] .modal-header { background: #0f172a; }
+  html[data-theme="dark"] .btn-outline { background: #1f2937; color: #e5e7eb; border-color: #334155; }
+  html[data-theme="dark"] .btn-outline:hover:not(:disabled) { background: #273449; }
+  html[data-theme="dark"] select, html[data-theme="dark"] input[type="text"], html[data-theme="dark"] input[type="number"] { background: #1f2937; color: #e5e7eb; border-color: #334155; }
+  html[data-theme="dark"] .card-title-badge, html[data-theme="dark"] .cat-row { color: #e5e7eb; }
+  html[data-theme="dark"] .control-row span { color: #cbd5e1; }
+  html[data-theme="dark"] .cat-badge { background: #1e293b; color: #93c5fd; }
+  html[data-theme="dark"] .multi-opt:hover { background: #1f2937; }
+  html[data-theme="dark"] .card-stage { background-color: #0b1220; background-image: linear-gradient(45deg,#111c30 25%,transparent 25%),linear-gradient(-45deg,#111c30 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#111c30 75%),linear-gradient(-45deg,transparent 75%,#111c30 75%); }
+  html[data-theme="dark"] [style*="border-top:1px solid #e2e8f0"] { border-top-color: #243044 !important; }
+  html[data-theme="dark"] [style*="background:#e2e8f0"] { background: #243044 !important; color: #e5e7eb !important; }
+  html[data-theme="dark"] [style*="background:#f8fafc"] { background: #0f172a !important; }
+  html[data-theme="dark"] [style*="background:#fff;border-radius:12px"] { background: #111827 !important; color: #e5e7eb !important; }
+  html[data-theme="dark"] .btn-link { background: #334155; }
 </style>
 </head>
 <body>
@@ -398,9 +428,12 @@
     <div class="sub-header">
       <div style="display:flex;align-items:center;gap:8px">
         <button class="btn-outline" id="btnCollapse" style="padding:2px 7px;font-size:11px" title="Collapse/Expand Sidebar">&lt;|</button>
-        <span id="st"><span class="dot"></span>Ready. Upload master creative artwork to start.</span>
+        <span id="st" aria-live="polite"><span class="dot"></span>Ready. Upload master creative artwork to start.</span>
+        <span id="stale" style="display:none;background:#fef3c7;color:#92400e;font-weight:700;padding:2px 8px;border-radius:10px">Settings changed: click Generate to apply</span>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
+        <a class="btn-link" id="endCardLink" href="https://generate-endcards.netlify.app/" target="_blank" rel="noopener noreferrer" title="Opens the End Card Generator in a new tab">End Card Generator &#8599;</a>
+        <button class="btn-outline" id="btnTheme" style="padding:2px 8px" title="Switch between light and dark">Dark</button>
         <span>View:</span>
         <button class="btn-outline" id="btnViewGrid" style="padding:2px 6px;font-size:10px;background:#e2e8f0;font-weight:700">Grid</button>
         <button class="btn-outline" id="btnViewRow" style="padding:2px 6px;font-size:10px">Row</button>
@@ -430,6 +463,8 @@
 
   <div class="modal-overlay" id="elm"></div>
   <div class="multi-popover" id="layPop"></div>
+  <div class="multi-popover" id="cpPop"></div>
+  <div id="dropOv">Drop PSD, PNG, JPG or WebP files to add them</div>
 
   <!-- FINE TUNE MODAL -->
   <div class="modal-overlay" id="ed">
@@ -902,6 +937,13 @@
       roles[o.it.i] = h ? 'hero' : 'decor';
       if (h) heroes.push(o);
     }
+    // No hero found: the biggest central artwork that is not named like decoration (a logo, title art...) is a key element, so keep it
+    if (!heroes.length) {
+      const cands = art.filter(o => roles[o.it.i] === 'decor' && !AA_DECOR.test(o.it.name || '') && !AA_BG.test(o.it.name || ''));
+      const central = cands.filter(o => Math.abs((o.x0 + o.x1) / 2 / dw - 0.5) < 0.25 && Math.abs((o.y0 + o.y1) / 2 / dh - 0.5) < 0.3);
+      const pick = (central.length ? central : cands).sort((a, b) => b.w * b.h - a.w * a.h)[0];
+      if (pick) { roles[pick.it.i] = 'content'; cont.push(pick); }
+    }
     for (const it of items) if (roles[it.i] === 'hero' && it.bb && !heroes.some(o => o.it.i === it.i)) heroes.push(box(it));
 
     const bgIds = items.filter(it => roles[it.i] === 'bg').map(it => it.i);
@@ -1228,7 +1270,7 @@
     const prevE = E;
     E = { r, f: r.file, W: r.s.w, H: r.s.h, sel: -1, drag: null, pan: null };
     try {
-      alignE('auto');
+      const pl = alignE('auto'); r.hiddenNames = (pl.hidden || []).map(i => E.f.lay.list[i].name); r.aligned = true;
       r.lay = flat();
       r.edit = { t: E.t.map(o => ({ ...o })), vis: [...E.vis] };
       r.sel = -1;
@@ -1346,12 +1388,14 @@
     cv.onpointerdown = e => {
       cv.setPointerCapture(e.pointerId);
       const p = cardPt(r, cv, e);
+      setActive(r);
 
       if (r.lay && r.edit) {
         const hd = handleAt(p);
         if (hd >= 0) {
           const q = selRect(r);
           const center = { x: q.x + q.w / 2, y: q.y + q.h / 2 };
+          pushHist(r);
           drag = { scale: true, center, d0: Math.hypot(p.x - center.x, p.y - center.y) || 1, k0: q.T.k };
           return;
         }
@@ -1363,11 +1407,13 @@
           if (!r.gifTargets) r.gifTargets = [];
           if (!r.gifTargets.includes(lName)) r.gifTargets.push(lName);
           if (r.updateGifTargetBtn) r.updateGifTargetBtn();
+          pushHist(r);
           drag = { i, p };
         }
         drawSel(r);
         return;
       }
+      pushHist(r);
       if (!r.ov) r.ov = initCardOv(r);
       drag = { pan: { x: e.clientX, y: e.clientY } };
     };
@@ -1420,6 +1466,7 @@
     cv.addEventListener('wheel', e => {
       if (e.shiftKey && r.lay && r.edit && r.sel >= 0) {
         e.preventDefault();
+        if (!r._wT) pushHist(r); clearTimeout(r._wT); r._wT = setTimeout(() => { r._wT = 0; }, 500);
         const q = selRect(r); if (!q) return;
         const factor = e.deltaY < 0 ? 1.05 : 0.95;
         const cx = q.x + q.w / 2, cy = q.y + q.h / 2;
@@ -1685,7 +1732,7 @@
 /* =========================================================================
      JPG / PNG: FIND SEPARATE ELEMENTS, CUT THEM OUT, AND TREAT THEM LIKE PSD LAYERS
      ========================================================================= */
-  const setBusy = b => { ['btnGen', 'btnGenAA', 'btnGenImg', 'btnGenImgAA'].forEach(id => $(id).disabled = true); if (!b) syncGo(); };
+  const setBusy = b => { ['btnGen', 'btnGenAA', 'btnGenImg', 'btnGenImgAA'].forEach(id => $(id).disabled = true); if (b) $('stale').style.display = 'none'; else syncGo(); };
 
   function dil(a, w, h, g) {
     if (g <= 0) return a;
@@ -1899,7 +1946,9 @@
   }
   function moveLayer(f, i, dir) {
     const L = f.lay.list, j = i + dir;
-    if (i < 1 || j < 1 || j >= L.length) return; // the locked background (bottom) stays where it is
+    const floor = f.kind === 'img' ? 1 : 0; // a cut-out image keeps its locked background at the bottom
+    if (i < floor || j < floor || j >= L.length) return;
+    for (const c of results) if (c.file === f) { c.undo = []; c.redo = []; } // old undo steps no longer match the new order
     [L[i], L[j]] = [L[j], L[i]];
     for (const c of results) {
       if (c.file !== f || !c.edit) continue; const e = c.edit;
@@ -1909,13 +1958,13 @@
   }
   function openLayerPop(r, btn) {
     const f = r.file, pop = $('layPop');
-    if (!r.edit) { $('st').textContent = 'Click Auto-align on this card first, then you can hide, lock and reorder its elements.'; return; }
+    if (!ensureEdit(r)) return;
     const draw = () => {
       pop.innerHTML = ''; const L = f.lay.list;
       const mk = (t, ti, fn) => { const b = document.createElement('button'); b.className = 'btn-outline'; b.style.cssText = 'padding:0 5px;font-size:11px'; b.textContent = t; b.title = ti; b.onclick = e => { e.stopPropagation(); fn(); }; return b; };
       for (let i = L.length - 1; i >= 0; i--) {
         const rw = document.createElement('div'); rw.className = 'multi-opt';
-        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = r.edit.vis[i]; cb.onchange = () => { r.edit.vis[i] = cb.checked; reflat(r); };
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = r.edit.vis[i]; cb.onchange = () => { pushHist(r); r.edit.vis[i] = cb.checked; reflat(r); };
         const nm = document.createElement('span'); nm.textContent = L[i].name; nm.style.flex = '1';
         rw.append(cb, nm, mk(L[i].lock ? '\u{1F512}' : '\u{1F513}', L[i].lock ? 'Locked: cannot be dragged. Click to unlock' : 'Click to lock in place', () => { L[i].lock = !L[i].lock; draw(); }),
           mk('\u25B2', 'Bring forward (in front of other elements)', () => { moveLayer(f, i, 1); draw(); }), mk('\u25BC', 'Send backward (behind other elements)', () => { moveLayer(f, i, -1); draw(); }));
@@ -1926,6 +1975,175 @@
     const b = btn.getBoundingClientRect(); pop.style.position = 'fixed'; pop.style.right = 'auto'; pop.style.width = '270px'; pop.style.maxHeight = '260px';
     pop.style.top = (b.bottom + 4) + 'px'; pop.style.left = Math.max(8, Math.min(innerWidth - 278, b.right - 270)) + 'px'; pop.classList.add('open');
   }
+
+/* =========================================================================
+     UNDO / REDO / NUDGE, COPY LAYOUT, LAYERS FOR PSD, FINE-TUNE EDITOR
+     ========================================================================= */
+  let activeCard = null;
+  function setActive(r) {
+    activeCard = r;
+    document.querySelectorAll('.card.active-card').forEach(c => c.classList.remove('active-card'));
+    if (r.cardEl) r.cardEl.classList.add('active-card');
+  }
+  const snap = r => ({ ov: r.ov ? { ...r.ov } : null, edit: r.edit ? { t: r.edit.t.map(o => ({ ...o })), vis: [...r.edit.vis] } : null });
+  function pushHist(r) { (r.undo = r.undo || []).push(snap(r)); if (r.undo.length > 40) r.undo.shift(); r.redo = []; }
+  function applySnap(r, s) {
+    r.ov = s.ov ? { ...s.ov } : null;
+    if (s.edit) { r.edit = { t: s.edit.t.map(o => ({ ...o })), vis: [...s.edit.vis] }; reflat(r); }
+    else { r.edit = null; r.lay = null; r.sel = -1; repaint(r); drawSel(r); }
+  }
+  function undo(r) { if (!r.undo || !r.undo.length) return; (r.redo = r.redo || []).push(snap(r)); applySnap(r, r.undo.pop()); }
+  function redo(r) { if (!r.redo || !r.redo.length) return; (r.undo = r.undo || []).push(snap(r)); applySnap(r, r.redo.pop()); }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { if ($('ed').style.display === 'flex') $('edc').click(); if ($('elm').style.display === 'flex') { $('elm').style.display = 'none'; $('elm').innerHTML = ''; } return; }
+    const t = e.target; if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+    if ($('ed').style.display === 'flex' || $('elm').style.display === 'flex') return;
+    const r = activeCard; if (!r || !results.includes(r)) return;
+    const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+    if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo(r) : undo(r); return; }
+    if (mod && k === 'y') { e.preventDefault(); redo(r); return; }
+    const d = { arrowleft: [-1, 0], arrowright: [1, 0], arrowup: [0, -1], arrowdown: [0, 1] }[k]; if (!d || mod) return;
+    const st = e.shiftKey ? 10 : 1;
+    if (r.lay && r.edit && r.sel >= 0) {
+      e.preventDefault(); if (!r._nT) pushHist(r); clearTimeout(r._nT); r._nT = setTimeout(() => { r._nT = 0; }, 500);
+      const T = r.edit.t[r.sel]; T.x += d[0] * st; T.y += d[1] * st; reflat(r);
+    } else if (!r.lay) {
+      e.preventDefault(); if (!r._nT) pushHist(r); clearTimeout(r._nT); r._nT = setTimeout(() => { r._nT = 0; }, 500);
+      if (!r.ov) r.ov = initCardOv(r); r.ov.x += d[0] * st / r.s.w; r.ov.y += d[1] * st / r.s.h; repaint(r);
+    }
+  });
+
+  // turns a card that shows the plain image into an editable layered card (all layers as in the master, covering the banner)
+  function ensureEdit(r) {
+    if (r.edit) return true;
+    if (!r.file.lay && !ensureLay(r.file)) return false;
+    pushHist(r);
+    const prev = E; E = { r, f: r.file, W: r.s.w, H: r.s.h, sel: -1 };
+    try { initT('cover'); r.lay = flat(); r.edit = { t: E.t.map(o => ({ ...o })), vis: [...E.vis] }; r.sel = -1; } finally { E = prev; }
+    repaint(r); return true;
+  }
+
+  // maps one layer's placement from one banner size to another (centre stays proportional, size follows the smaller side)
+  function mapLayerT(T, bb, lay, S, D, doc) {
+    if (lay.cv.width >= 0.85 * doc.w && lay.cv.height >= 0.85 * doc.h) { // background-sized: keep it covering the new banner
+      const k = Math.max(D.w / doc.w, D.h / doc.h);
+      return { x: (D.w - doc.w * k) / 2 + lay.left * k, y: (D.h - doc.h * k) / 2 + lay.top * k, k };
+    }
+    const b = bb || { x0: 0, y0: 0, x1: lay.cv.width, y1: lay.cv.height }, bx = (b.x0 + b.x1) / 2, by = (b.y0 + b.y1) / 2;
+    const k = T.k * Math.min(D.w / S.w, D.h / S.h), cx = (T.x + bx * T.k) / S.w * D.w, cy = (T.y + by * T.k) / S.h * D.h;
+    return { x: cx - bx * k, y: cy - by * k, k };
+  }
+  function copyLayoutTo(src, dst) {
+    const f = src.file, L = f.lay.list, e = src.edit;
+    if (!ensureEdit(dst)) return;
+    const t = L.map((l, i) => { const m = mapLayerT(e.t[i], tight(l), l, src.s, dst.s, f.lay); return { ...m, k0: dst.edit.t[i].k0 }; });
+    pushHist(dst); dst.edit = { t, vis: [...e.vis] }; dst.sel = -1; reflat(dst);
+  }
+  function openCopyPop(r, btn) {
+    const pop = $('cpPop');
+    if (!r.edit) { $('st').textContent = 'Arrange this size first (Auto-align or drag elements), then copy the layout to other sizes.'; return; }
+    const others = results.filter(c => c.file === r.file && c !== r);
+    if (!others.length) { $('st').textContent = 'There are no other sizes of this file to copy to.'; return; }
+    pop.innerHTML = '<div style="font-size:11px;font-weight:700;padding:2px 6px">Copy this layout to:</div>';
+    const rows = others.map(c => {
+      const lb = document.createElement('label'); lb.className = 'multi-opt';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = Math.abs(Math.log((c.s.w / c.s.h) / (r.s.w / r.s.h))) < 0.3;
+      lb.append(cb, document.createTextNode(`${c.s.w}×${c.s.h}${c.s.isRetina ? ' (2x)' : ''}`)); pop.appendChild(lb); return { c, cb };
+    });
+    const go = document.createElement('button'); go.className = 'btn-primary'; go.style.cssText = 'margin:4px 6px;padding:4px 10px'; go.textContent = 'Apply to selected';
+    go.onclick = e => {
+      e.stopPropagation(); const sel = rows.filter(x => x.cb.checked).map(x => x.c);
+      sel.forEach(c => copyLayoutTo(r, c)); pop.classList.remove('open');
+      $('st').textContent = sel.length ? `Layout copied to ${sel.length} size${sel.length > 1 ? 's' : ''}. Ctrl+Z on a card undoes it.` : 'No sizes selected.';
+    };
+    pop.appendChild(go);
+    document.querySelectorAll('.multi-popover.open').forEach(p => p.classList.remove('open'));
+    const b = btn.getBoundingClientRect(); pop.style.position = 'fixed'; pop.style.right = 'auto'; pop.style.width = '210px'; pop.style.maxHeight = '280px';
+    pop.style.top = (b.bottom + 4) + 'px'; pop.style.left = Math.max(8, Math.min(innerWidth - 218, b.right - 210)) + 'px'; pop.classList.add('open');
+  }
+
+  /* ---- full-screen Fine-Tune editor ---- */
+  function sizeCv() { const w = $('edw'), c = $('edv'); c.width = Math.max(300, w.clientWidth); c.height = Math.max(200, w.clientHeight); }
+  function fitView() {
+    let a = 0, b = 0, c = E.W, d = E.H;
+    E.f.lay.list.forEach((l, i) => { if (!E.vis[i]) return; const t = E.t[i]; a = Math.min(a, t.x); b = Math.min(b, t.y); c = Math.max(c, t.x + l.cv.width * t.k); d = Math.max(d, t.y + l.cv.height * t.k); });
+    const pad = Math.max(c - a, d - b) * 0.05; a -= pad; b -= pad; c += pad; d += pad;
+    const cv = $('edv'); E.vs = Math.min(cv.width / (c - a), cv.height / (d - b)); E.vx = a - (cv.width / E.vs - (c - a)) / 2; E.vy = b - (cv.height / E.vs - (d - b)) / 2;
+  }
+  function drawEd() {
+    const cv = $('edv'), x = cv.getContext('2d'), s = E.vs, fx = -E.vx * s, fy = -E.vy * s, fw = E.W * s, fh = E.H * s;
+    x.setTransform(1, 0, 0, 1, 0, 0); x.fillStyle = '#0f172a'; x.fillRect(0, 0, cv.width, cv.height);
+    x.setTransform(s, 0, 0, s, fx, fy); x.fillStyle = $('bg').value; x.fillRect(0, 0, E.W, E.H); layers(x);
+    x.setTransform(1, 0, 0, 1, 0, 0); x.fillStyle = 'rgba(15,23,42,0.65)'; x.beginPath(); x.rect(0, 0, cv.width, cv.height); x.rect(fx, fy, fw, fh); x.fill('evenodd');
+    x.strokeStyle = '#3b82f6'; x.lineWidth = 2; x.strokeRect(fx, fy, fw, fh);
+    if (E.sel >= 0 && E.vis[E.sel]) { const l = E.f.lay.list[E.sel], t = E.t[E.sel]; x.strokeStyle = '#f59e0b'; x.lineWidth = 2; x.setLineDash([6, 4]); x.strokeRect((t.x - E.vx) * s, (t.y - E.vy) * s, l.cv.width * t.k * s, l.cv.height * t.k * s); x.setLineDash([]); }
+    const p = $('edp'); p.width = E.W; p.height = E.H; const px = p.getContext('2d'); px.fillStyle = $('bg').value; px.fillRect(0, 0, E.W, E.H); layers(px);
+  }
+  function syncSel() {
+    const el = $('edl'); el.innerHTML = '';
+    [...E.f.lay.list.keys()].reverse().forEach(i => {
+      const d = document.createElement('div'); d.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px;font-size:12px;cursor:pointer;' + (i === E.sel ? 'background:#dbeafe;color:#0f172a;font-weight:700;' : '');
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = E.vis[i]; cb.onclick = e => { e.stopPropagation(); E.vis[i] = cb.checked; drawEd(); };
+      const nm = document.createElement('span'); nm.textContent = E.f.lay.list[i].name + (E.f.lay.list[i].lock ? ' \u{1F512}' : ''); d.append(cb, nm);
+      d.onclick = () => { E.sel = i; syncSel(); drawEd(); }; el.appendChild(d);
+    });
+    $('eds').disabled = E.sel < 0; if (E.sel >= 0) { const t = E.t[E.sel]; $('eds').value = Math.round(t.k / t.k0 * 100); }
+  }
+  function openEd(r) {
+    const f = r.file; if (!ensureLay(f)) return;
+    E = { r, f, W: r.s.w, H: r.s.h, sel: -1, drag: null, pan: null };
+    if (r.edit) { E.t = r.edit.t.map(o => ({ ...o })); E.vis = [...r.edit.vis]; } else initT('cover');
+    $('edt').textContent = `Fine-Tune: ${r.name} (${r.s.w}×${r.s.h})`; $('ed').style.display = 'flex';
+    sizeCv(); fitView(); syncSel(); drawEd();
+  }
+  const edPt = e => { const c = $('edv'), b = c.getBoundingClientRect(), sx = (e.clientX - b.left) * c.width / b.width, sy = (e.clientY - b.top) * c.height / b.height; return { x: sx / E.vs + E.vx, y: sy / E.vs + E.vy, sx, sy }; };
+  $('edv').onpointerdown = e => {
+    if (!E) return; $('edv').setPointerCapture(e.pointerId); const p = edPt(e); let h = -1;
+    for (let i = E.t.length - 1; i >= 0; i--) {
+      if (!E.vis[i] || E.f.lay.list[i].lock) continue; const l = E.f.lay.list[i], t = E.t[i], lx = Math.floor((p.x - t.x) / t.k), ly = Math.floor((p.y - t.y) / t.k);
+      if (lx >= 0 && ly >= 0 && lx < l.cv.width && ly < l.cv.height && l.cv.getContext('2d').getImageData(lx, ly, 1, 1).data[3] > 12) { h = i; break; }
+    }
+    E.sel = h; syncSel(); if (h >= 0) E.drag = p; else E.pan = { sx: p.sx, sy: p.sy }; drawEd();
+  };
+  $('edv').onpointermove = e => {
+    if (!E) return; const p = edPt(e);
+    if (E.drag && E.sel >= 0) { const t = E.t[E.sel]; t.x += p.x - E.drag.x; t.y += p.y - E.drag.y; E.drag = p; drawEd(); }
+    else if (E.pan) { E.vx -= (p.sx - E.pan.sx) / E.vs; E.vy -= (p.sy - E.pan.sy) / E.vs; E.pan = { sx: p.sx, sy: p.sy }; drawEd(); }
+  };
+  $('edv').onpointerup = $('edv').onpointercancel = () => { if (E) E.drag = E.pan = null; };
+  $('edv').addEventListener('wheel', e => { if (!E) return; e.preventDefault(); const p = edPt(e), f = e.deltaY < 0 ? 1.15 : 1 / 1.15; E.vs *= f; E.vx = p.x - p.sx / E.vs; E.vy = p.y - p.sy / E.vs; drawEd(); }, { passive: false });
+  $('eds').oninput = () => {
+    if (!E || E.sel < 0) return; const l = E.f.lay.list[E.sel], t = E.t[E.sel], cx = t.x + l.cv.width * t.k / 2, cy = t.y + l.cv.height * t.k / 2;
+    t.k = t.k0 * $('eds').value / 100; t.x = cx - l.cv.width * t.k / 2; t.y = cy - l.cv.height * t.k / 2; drawEd();
+  };
+  $('eaa').onclick = () => { if (!E) return; alignE('auto'); E.sel = -1; fitView(); syncSel(); drawEd(); };
+  $('edr').onclick = () => { if (!E) return; initT('cover'); E.sel = -1; fitView(); syncSel(); drawEd(); };
+  $('edf').onclick = () => { if (E) { fitView(); drawEd(); } };
+  $('edc').onclick = () => { $('ed').style.display = 'none'; E = null; };
+  $('eda').onclick = () => {
+    if (!E) return; const r = E.r; pushHist(r); r.lay = flat(); r.edit = { t: E.t.map(o => ({ ...o })), vis: [...E.vis] }; r.sel = -1;
+    $('ed').style.display = 'none'; E = null; repaint(r); drawSel(r);
+  };
+  addEventListener('resize', () => { if (E && $('ed').style.display === 'flex') { sizeCv(); fitView(); drawEd(); } });
+
+  /* ---- drag-and-drop upload, "settings changed" hint, theme ---- */
+  const okExt = /\.(psd|png|jpe?g|webp)$/i; let dragDepth = 0;
+  addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; $('dropOv').style.display = 'flex'; } });
+  addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('dropOv').style.display = 'none'; });
+  addEventListener('dragover', e => e.preventDefault());
+  addEventListener('drop', e => {
+    e.preventDefault(); dragDepth = 0; $('dropOv').style.display = 'none';
+    const all = [...(e.dataTransfer.files || [])], ok = all.filter(f => okExt.test(f.name));
+    if (ok.length) loadFiles(ok); if (all.length > ok.length) alert('Only PSD, PNG, JPG and WebP files can be added.');
+  });
+  function markStale() { if (results.length) $('stale').style.display = 'inline-block'; }
+  ['mode', 'fmt', 'rq', 'chk2xMaster'].forEach(id => $(id).addEventListener('change', markStale)); $('bg').addEventListener('input', markStale);
+  const _dc = drawCategories; drawCategories = function () { _dc(); markStale(); };
+  const applyTheme = t => { document.documentElement.dataset.theme = t; $('btnTheme').textContent = t === 'dark' ? '\u2600 Light' : '\u{1F319} Dark'; try { localStorage.setItem('revxTheme', t); } catch (e) { /* storage blocked */ } };
+  let savedTheme = null; try { savedTheme = localStorage.getItem('revxTheme'); } catch (e) { /* storage blocked */ }
+  applyTheme(savedTheme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  $('btnTheme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 
   async function runGenerate(autoAlign, kind, only) {
     const targetList = getActiveTargets();
@@ -1956,7 +2174,7 @@
         const r = { name: `${f.name}_${s.w}x${s.h}${s.isRetina ? '@2x' : ''}.${ext}`, cv, src: f.cv, file: f, s, ov: null, fmt, q: 0.92 };
         results.push(r);
 
-        const card = document.createElement('div'); card.className = 'card'; card.dataset.fid = f.id;
+        const card = document.createElement('div'); card.className = 'card'; card.dataset.fid = f.id; r.cardEl = card;
 
         const top = document.createElement('div'); top.className = 'card-header';
         const leftDim = document.createElement('div'); leftDim.className = 'card-title-badge';
@@ -1969,8 +2187,14 @@
 
         if (f.buf) {
           const btnAA = document.createElement('button'); btnAA.className = 'btn-outline'; btnAA.textContent = 'Auto-align';
-          btnAA.onclick = () => { autoApply(r); drawSel(r); };
-          actDiv.appendChild(btnAA);
+          btnAA.onclick = () => { pushHist(r); autoApply(r); drawSel(r); };
+          const btnLy = document.createElement('button'); btnLy.className = 'btn-outline pop-btn'; btnLy.textContent = 'Layers';
+          btnLy.title = 'Show, hide, lock and reorder (front / back) the layers';
+          btnLy.onclick = e => { e.stopPropagation(); openLayerPop(r, btnLy); };
+          const btnCp = document.createElement('button'); btnCp.className = 'btn-outline pop-btn'; btnCp.textContent = 'Copy layout';
+          btnCp.title = 'Copy this arrangement to your other sizes of the same file';
+          btnCp.onclick = e => { e.stopPropagation(); openCopyPop(r, btnCp); };
+          actDiv.append(btnAA, btnLy, btnCp);
         }
 
         if (f.kind === 'img') {
@@ -1978,20 +2202,14 @@
           btnEl.title = 'Choose which elements to cut out of this image, tune detection, or draw a box around one yourself';
           btnEl.onclick = () => openElemPicker(f);
           actDiv.appendChild(btnEl);
-          if (f.lay) {
-            const btnLy = document.createElement('button'); btnLy.className = 'btn-outline pop-btn'; btnLy.textContent = 'Layers';
-            btnLy.title = 'Hide, lock and reorder (front / back) the cut-out elements';
-            btnLy.onclick = e => { e.stopPropagation(); openLayerPop(r, btnLy); };
-            actDiv.appendChild(btnLy);
-          }
         }
 
         const btnEdit = document.createElement('button'); btnEdit.className = 'btn-outline'; btnEdit.textContent = 'Fine-Tune';
-        btnEdit.disabled = true;
-        btnEdit.title = 'The full-screen Fine-Tune editor is not included in this version. Drag and resize elements directly on the preview (Shift + scroll also resizes the selected element).';
+        if (f.buf) { btnEdit.onclick = () => openEd(r); btnEdit.title = 'Open the full-screen layer editor for this size'; }
+        else { btnEdit.disabled = true; btnEdit.title = 'Fine-Tune needs layers: use a PSD, or Generate & Auto Align (JPG/PNG) first.'; }
 
         const btnReset = document.createElement('button'); btnReset.className = 'btn-outline'; btnReset.textContent = 'Reset';
-        btnReset.onclick = () => { r.ov = null; r.lay = null; r.edit = null; repaint(r); drawSel(r); };
+        btnReset.onclick = () => { pushHist(r); if (r.aligned && f.buf) { autoApply(r); } else { r.ov = null; r.lay = null; r.edit = null; r.sel = -1; repaint(r); } drawSel(r); };
 
         const btnSave = document.createElement('button'); btnSave.className = 'btn-primary'; btnSave.textContent = 'Save';
         btnSave.onclick = async () => {
@@ -2026,6 +2244,7 @@
 
     $('cntStatic').textContent = results.length;
     $('st').innerHTML = `<span class="dot"></span>Generated ${results.length} static format(s). You can now generate GIFs from this layout.` +
+      (autoAlign && (() => { const h = new Set(); results.forEach(c => (c.hiddenNames || []).forEach(n => h.add(n))); return h.size ? ` Auto-align hid: ${[...h].slice(0, 6).map(esc).join(', ')}${h.size > 6 ? '…' : ''}. Open Layers on a card to bring any back.` : ''; })()) +
       (notes.length ? ` No separate elements were found in ${notes.map(esc).join(', ')}. Use the Elements button on a card to mark them by hand.` : '');
     setBusy(false);
     $('btnZip').disabled = false;
