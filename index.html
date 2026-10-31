@@ -685,6 +685,59 @@
     hue: 'hue', saturation: 'saturation', color: 'color', luminosity: 'luminosity'
   };
 
+  /* ---- layer effects (outer glow, drop shadow, stroke, colour overlay) ---- */
+  function fxList(v) { return !v ? [] : (Array.isArray(v) ? v : [v]).filter(o => o && typeof o === 'object' && o.enabled !== false); }
+  function rgbOf(c) { return `rgb(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)})`; }
+  function fxPx(v) { return v == null ? 0 : (typeof v === 'number' ? v : (v.value || 0)); }
+  function canBlur() { try { return 'filter' in document.createElement('canvas').getContext('2d'); } catch (e) { return false; } }
+  // soft edge; boost > 1 makes a denser halo, like Photoshop's glow
+  function fxBlur(src, px, boost) {
+    const c = docCv(src.width, src.height), x = c.getContext('2d');
+    if (canBlur()) { x.filter = `blur(${Math.max(0.5, px)}px)`; for (let i = 0; i < boost; i++) x.drawImage(src, 0, 0); return c; }
+    const f = Math.max(1, Math.min(16, px)), sm = docCv(Math.max(1, Math.ceil(src.width / f)), Math.max(1, Math.ceil(src.height / f)));
+    sm.getContext('2d').drawImage(src, 0, 0, sm.width, sm.height); x.imageSmoothingQuality = 'high';
+    for (let i = 0; i < boost; i++) x.drawImage(sm, 0, 0, c.width, c.height); return c;
+  }
+  function fxSil(cv, color, pad) {
+    const c = docCv(cv.width + 2 * pad, cv.height + 2 * pad), x = c.getContext('2d');
+    x.drawImage(cv, pad, pad); x.globalCompositeOperation = 'source-in'; x.fillStyle = rgbOf(color); x.fillRect(0, 0, c.width, c.height); return c;
+  }
+  function fxTint(cv, l) {
+    const f = fxList(l.effects && l.effects.solidFill)[0]; if (!f || !f.color) return cv;
+    const t = docCv(cv.width, cv.height), x = t.getContext('2d'); x.drawImage(cv, 0, 0);
+    x.globalCompositeOperation = 'source-atop'; x.globalAlpha = f.opacity == null ? 1 : f.opacity; x.fillStyle = rgbOf(f.color); x.fillRect(0, 0, t.width, t.height); return t;
+  }
+  // effects that sit behind a layer: [{cv, dx, dy, op, bm}] (dx, dy = where its top-left sits relative to the layer's top-left)
+  function fxBehind(l, cv) {
+    const e = l.effects; if (!e) return [];
+    const out = [];
+    for (const d of fxList(e.dropShadow)) {
+      const sz = fxPx(d.size), dist = fxPx(d.distance), ang = (d.angle == null ? 120 : d.angle) * Math.PI / 180, pad = Math.ceil(sz * 1.5 + dist) + 2;
+      out.push({ cv: fxBlur(fxSil(cv, d.color || { r: 0, g: 0, b: 0 }, pad), sz * 0.5, 2), dx: -pad - Math.cos(ang) * dist, dy: -pad + Math.sin(ang) * dist, op: d.opacity == null ? 1 : d.opacity, bm: BM[d.blendMode] || 'source-over' });
+    }
+    for (const g of fxList(e.outerGlow)) {
+      const sz = Math.max(1, fxPx(g.size)), pad = Math.ceil(sz * 1.5) + 2;
+      out.push({ cv: fxBlur(fxSil(cv, g.color || { r: 255, g: 255, b: 190 }, pad), sz * 0.5, 3), dx: -pad, dy: -pad, op: g.opacity == null ? 1 : g.opacity, bm: BM[g.blendMode] || 'source-over' });
+    }
+    for (const s of fxList(e.stroke)) { // outside stroke: stamp the silhouette in a ring
+      const sz = Math.max(1, fxPx(s.size)), pad = Math.ceil(sz) + 2, base = fxSil(cv, s.color || { r: 0, g: 0, b: 0 }, pad), c = docCv(base.width, base.height), x = c.getContext('2d');
+      for (let a = 0; a < 24; a++) x.drawImage(base, Math.cos(a / 24 * 6.2832) * sz, Math.sin(a / 24 * 6.2832) * sz);
+      out.push({ cv: c, dx: -pad, dy: -pad, op: s.opacity == null ? 1 : s.opacity, bm: BM[s.blendMode] || 'source-over' });
+    }
+    return out;
+  }
+  // for single layers that become movable pieces: paint the effects into the piece itself
+  function fxBake(l, cv, left, top) {
+    const t = fxTint(cv, l), fx = fxBehind(l, t); if (!fx.length) return { cv: t, left, top };
+    let x0 = 0, y0 = 0, x1 = t.width, y1 = t.height;
+    fx.forEach(f => { x0 = Math.min(x0, f.dx); y0 = Math.min(y0, f.dy); x1 = Math.max(x1, f.dx + f.cv.width); y1 = Math.max(y1, f.dy + f.cv.height); });
+    x0 = Math.floor(x0); y0 = Math.floor(y0);
+    const c = docCv(Math.ceil(x1 - x0), Math.ceil(y1 - y0)), x = c.getContext('2d');
+    fx.forEach(f => { x.globalAlpha = f.op; x.globalCompositeOperation = f.bm; x.drawImage(f.cv, f.dx - x0, f.dy - y0); });
+    x.globalAlpha = 1; x.globalCompositeOperation = 'source-over'; x.drawImage(t, -x0, -y0);
+    return { cv: c, left: left + x0, top: top + y0 };
+  }
+
   function maskedCanvas(l) {
     const m = l.mask, src = l.canvas;
     if (!m || !m.canvas || m.disabled) return src;
@@ -740,6 +793,10 @@
       if (!l.canvas) continue;
       let cv = maskedCanvas(l); const left = l.left || 0, top = l.top || 0;
       if (l.clipping && base) cv = clipToBase(cv, left, top, base); else base = { cv, left, top };
+      cv = fxTint(cv, l);
+      const gA = x.globalAlpha, gO = x.globalCompositeOperation;
+      for (const f of fxBehind(l, cv)) { x.globalAlpha = gA * f.op; x.globalCompositeOperation = f.bm; x.drawImage(f.cv, left + f.dx, top + f.dy); }
+      x.globalAlpha = gA; x.globalCompositeOperation = gO;
       x.drawImage(cv, left, top);
     }
     x.globalAlpha = 1; x.globalCompositeOperation = 'source-over'; return c;
@@ -868,8 +925,8 @@
         push(l.name || 'Group', false, g, 0, 0, op, bm, true); continue;
       }
       if (!l.canvas) continue;
-      let cv = maskedCanvas(l); const left = l.left || 0, top = l.top || 0;
-      push(l.name || 'Layer', !!l.text, cv, left, top, op, bm, false);
+      const bk = fxBake(l, maskedCanvas(l), l.left || 0, l.top || 0);
+      push(l.name || 'Layer', !!l.text, bk.cv, bk.left, bk.top, op, bm, false);
     }
     return { w: dw, h: dh, list };
   }
@@ -2145,11 +2202,41 @@
   applyTheme(savedTheme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   $('btnTheme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 
+  // how far the rebuilt layers are from the preview Photoshop saved inside the PSD (0 = identical, 255 = opposite)
+  function psdFidelity(f) {
+    if (f.fid != null) return f.fid;
+    if (!ensureLay(f)) return 0;
+    const L = f.lay, S = Math.min(1, 320 / Math.max(L.w, L.h)), w = Math.max(1, Math.round(L.w * S)), h = Math.max(1, Math.round(L.h * S));
+    const a = docCv(w, h), x = a.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.imageSmoothingQuality = 'high';
+    L.list.forEach(l => { x.globalAlpha = l.op; x.globalCompositeOperation = l.bm; x.drawImage(l.cv, l.left * S, l.top * S, l.cv.width * S, l.cv.height * S); });
+    x.globalAlpha = 1; x.globalCompositeOperation = 'source-over';
+    const b = docCv(w, h), bx = b.getContext('2d'); bx.fillStyle = '#fff'; bx.fillRect(0, 0, w, h); bx.drawImage(f.cv, 0, 0, w, h);
+    const A = x.getImageData(0, 0, w, h).data, B = bx.getImageData(0, 0, w, h).data; let e = 0, wh = 0;
+    for (let i = 0; i < B.length; i += 4) if (Math.min(B[i], B[i + 1], B[i + 2]) > 235) wh++;
+    if (wh > 0.9 * w * h) return f.fid = 0; // a (nearly) blank saved preview, e.g. a template placeholder, cannot be trusted: the layers are the better source
+    for (let i = 0; i < A.length; i += 4) e += Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]);
+    return f.fid = e / (w * h * 3);
+  }
+
   async function runGenerate(autoAlign, kind, only) {
     const targetList = getActiveTargets();
     if (!targetList) return;
-    const todo = only ? [only] : files.filter(f => f.kind === kind);
+    let todo = only ? [only] : files.filter(f => f.kind === kind);
     if (!todo.length) return;
+    const moved = []; // PSDs whose layers cannot reproduce their own preview: offered the preview-based route instead
+    if (kind === 'psd' && autoAlign) {
+      for (const f of [...todo]) {
+        $('st').innerHTML = `<span class="dot" style="background:#3b82f6"></span>Checking the layers of ${esc(f.name)}…`;
+        await new Promise(r => setTimeout(r));
+        const err = psdFidelity(f);
+        if (err > 20 && confirm('The layers of "' + f.name + '" do not rebuild the picture Photoshop saved in this PSD (colour difference ' + err.toFixed(0) + ' out of 255). ' +
+          'This usually means smart objects or effects that cannot be read from the file, so Auto Align would change the colours.\n\n' +
+          'OK = use the PSD\'s saved preview instead: exact colours, and the elements are found automatically like a JPG/PNG.\n' +
+          'Cancel = keep using the layers anyway.')) { f.kind = 'img'; f.buf = undefined; f.lay = null; f.fid = null; moved.push(f); }
+      }
+      todo = todo.filter(f => !moved.includes(f));
+      if (!todo.length) { syncGo(); for (const m of moved) await runGenerate(true, 'img', m); return; }
+    }
 
     // redo only these files: drop their old cards, results and GIFs, keep everything else on screen
     results = results.filter(r => !todo.includes(r.file));
@@ -2244,9 +2331,10 @@
 
     $('cntStatic').textContent = results.length;
     $('st').innerHTML = `<span class="dot"></span>Generated ${results.length} static format(s). You can now generate GIFs from this layout.` +
-      (autoAlign && (() => { const h = new Set(); results.forEach(c => (c.hiddenNames || []).forEach(n => h.add(n))); return h.size ? ` Auto-align hid: ${[...h].slice(0, 6).map(esc).join(', ')}${h.size > 6 ? '…' : ''}. Open Layers on a card to bring any back.` : ''; })()) +
+      (autoAlign ? (() => { const h = new Set(); results.forEach(c => (c.hiddenNames || []).forEach(n => h.add(n))); return h.size ? ` Auto-align hid: ${[...h].slice(0, 6).map(esc).join(', ')}${h.size > 6 ? '…' : ''}. Open Layers on a card to bring any back.` : ''; })() : '') +
       (notes.length ? ` No separate elements were found in ${notes.map(esc).join(', ')}. Use the Elements button on a card to mark them by hand.` : '');
     setBusy(false);
+    for (const m of moved) await runGenerate(true, 'img', m);
     $('btnZip').disabled = false;
   }
 
