@@ -385,6 +385,11 @@
           <option value="std">Standard (Fast)</option>
         </select>
       </div>
+
+      <div class="control-row" title="Off by default. Only affects very wide, short sizes.">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:600"><input type="checkbox" id="chkStrip" style="accent-color:#1d4ed8"> Small-size layout</label>
+      </div>
+      <div style="font-size:10px;color:var(--muted)">For 320&times;50, 300&times;50 and 728&times;90: keeps only your &#9733; layers (or the main text, logo and button if none are marked) in one row. Applies when you Auto-align.</div>
     </div>
 
     <!-- GIF Settings -->
@@ -936,6 +941,34 @@
   const AA_BG = /(^|[^a-z])(bg|background|backdrop|sunset|resort|landscape|beach|sky|scene|wallpaper|base)([^a-z]|$)/i;
   const AA_FOOT = /footer|legal|disclaim|tnc|t&c|bottom ?bar/i;
 
+  // Small-size layout for very wide, short banners (320x50, 300x50, 728x90): keep a few key layers and line them up left to right.
+  // Off unless the "Small-size layout" box is ticked. Uses the layers marked with a star; if none are marked it picks the main ones itself.
+  function planStrip(items, p, W, H) {
+    const roles = p.roles || {}, bgIds = new Set(p.bg || []), area = it => (it.bb.x1 - it.bb.x0) * (it.bb.y1 - it.bb.y0);
+    let keep = items.filter(it => it.keep && it.bb && !bgIds.has(it.i)), auto = false;
+    if (!keep.length) {
+      auto = true;
+      keep = items.filter(it => it.bb && !bgIds.has(it.i) && (roles[it.i] === 'content' || roles[it.i] === 'hero')).sort((a, b) => area(b) - area(a)).slice(0, 4);
+    }
+    if (!keep.length) return null;
+    const mg = Math.max(2, Math.round(H * 0.08)), Hs = H - 2 * mg, gapMin = Math.max(3, mg), cx = it => it.left + (it.bb.x0 + it.bb.x1) / 2;
+    const info = keep.slice().sort((a, b) => cx(a) - cx(b)).map(it => {
+      const w = it.bb.x1 - it.bb.x0, h = it.bb.y1 - it.bb.y0, hero = roles[it.i] === 'hero';
+      const cap = (W - 2 * mg) * (hero ? 0.35 : it.txt ? 0.55 : 0.3); // no single piece may take over the whole strip
+      return { it, w, h, hero, s: Math.min((hero ? H * 1.1 : it.txt ? Hs * 0.8 : Hs * 0.7) / h, cap / w) };
+    });
+    const sum = () => info.reduce((a, o) => a + o.w * o.s, 0), avail = W - gapMin * (info.length + 1);
+    if (sum() > avail) { const f = Math.max(0.05, avail / sum()); info.forEach(o => { o.s *= f; }); }
+    const gap = (W - sum()) / (info.length + 1), moves = p.moves.filter(m => bgIds.has(m.i)); let x = gap;
+    for (const o of info) {
+      const ww = o.w * o.s, hh = o.h * o.s, y = o.hero && hh > H * 0.9 ? H - hh : (H - hh) / 2;
+      moves.push({ i: o.it.i, x: x - o.it.bb.x0 * o.s, y: y - o.it.bb.y0 * o.s, k: o.s });
+      x += ww + gap;
+    }
+    const kept = new Set(info.map(o => o.it.i));
+    return { moves, bg: p.bg, hidden: items.filter(it => !bgIds.has(it.i) && !kept.has(it.i)).map(it => it.i), roles, strip: true, auto, s: p.s };
+  }
+
   function planAlign(items, dw, dh, W, H, mode, hideMinor, keepDecor) {
     const area = dw * dh, roles = {}, tightBn = W / H >= 3 || H / W >= 2.5 || Math.min(W, H) <= 100;
     const box = it => ({ it, w: it.bb.x1 - it.bb.x0, h: it.bb.y1 - it.bb.y0, x0: it.left + it.bb.x0, y0: it.top + it.bb.y0, x1: it.left + it.bb.x1, y1: it.top + it.bb.y1 });
@@ -1310,9 +1343,10 @@
     const L = E.f.lay;
     const items = L.list.map((l, i) => {
       const bb = tight(l);
-      return { i, name: l.name, grp: l.grp, txt: l.txt, role: l.role, left: l.left, top: l.top, bb, cov: l.cov, mask: l.mask, soft: l.soft, photo: l.photo };
+      return { i, name: l.name, grp: l.grp, txt: l.txt, role: l.role, left: l.left, top: l.top, bb, cov: l.cov, mask: l.mask, soft: l.soft, photo: l.photo, keep: l.keep };
     });
-    const p = planAlign(items, L.w, L.h, E.W, E.H, mode, false, false);
+    let p = planAlign(items, L.w, L.h, E.W, E.H, mode, false, false);
+    if ($('chkStrip') && $('chkStrip').checked && E.W / E.H >= 4.5) p = planStrip(items, p, E.W, E.H) || p;
     initT('cover');
     for (const m of p.moves) {
       const t = E.t[m.i];
@@ -1327,7 +1361,7 @@
     const prevE = E;
     E = { r, f: r.file, W: r.s.w, H: r.s.h, sel: -1, drag: null, pan: null };
     try {
-      const pl = alignE('auto'); r.hiddenNames = (pl.hidden || []).map(i => E.f.lay.list[i].name); r.aligned = true;
+      const pl = alignE('auto'); r.hiddenNames = pl.strip ? [] : (pl.hidden || []).map(i => E.f.lay.list[i].name); r.stripNote = pl.strip ? (pl.auto ? 'auto' : 'marked') : null; r.aligned = true;
       r.lay = flat();
       r.edit = { t: E.t.map(o => ({ ...o })), vis: [...E.vis] };
       r.sel = -1;
@@ -2023,7 +2057,7 @@
         const rw = document.createElement('div'); rw.className = 'multi-opt';
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = r.edit.vis[i]; cb.onchange = () => { pushHist(r); r.edit.vis[i] = cb.checked; reflat(r); };
         const nm = document.createElement('span'); nm.textContent = L[i].name; nm.style.flex = '1';
-        rw.append(cb, nm, mk(L[i].lock ? '\u{1F512}' : '\u{1F513}', L[i].lock ? 'Locked: cannot be dragged. Click to unlock' : 'Click to lock in place', () => { L[i].lock = !L[i].lock; draw(); }),
+        rw.append(cb, nm, mk(L[i].keep ? '\u2605' : '\u2606', 'Keep on small sizes. Used by the Small-size layout (320x50, 300x50, 728x90). Click Auto-align on the small size to apply.', () => { L[i].keep = !L[i].keep; $('st').textContent = 'Click Auto-align on a small size to apply the change.'; draw(); }), mk(L[i].lock ? '\u{1F512}' : '\u{1F513}', L[i].lock ? 'Locked: cannot be dragged. Click to unlock' : 'Click to lock in place', () => { L[i].lock = !L[i].lock; draw(); }),
           mk('\u25B2', 'Bring forward (in front of other elements)', () => { moveLayer(f, i, 1); draw(); }), mk('\u25BC', 'Send backward (behind other elements)', () => { moveLayer(f, i, -1); draw(); }));
         pop.appendChild(rw);
       }
@@ -2195,7 +2229,7 @@
     if (ok.length) loadFiles(ok); if (all.length > ok.length) alert('Only PSD, PNG, JPG and WebP files can be added.');
   });
   function markStale() { if (results.length) $('stale').style.display = 'inline-block'; }
-  ['mode', 'fmt', 'rq', 'chk2xMaster'].forEach(id => $(id).addEventListener('change', markStale)); $('bg').addEventListener('input', markStale);
+  ['mode', 'fmt', 'rq', 'chk2xMaster', 'chkStrip'].forEach(id => $(id).addEventListener('change', markStale)); $('bg').addEventListener('input', markStale);
   const _dc = drawCategories; drawCategories = function () { _dc(); markStale(); };
   const applyTheme = t => { document.documentElement.dataset.theme = t; $('btnTheme').textContent = t === 'dark' ? '\u2600 Light' : '\u{1F319} Dark'; try { localStorage.setItem('revxTheme', t); } catch (e) { /* storage blocked */ } };
   let savedTheme = null; try { savedTheme = localStorage.getItem('revxTheme'); } catch (e) { /* storage blocked */ }
@@ -2332,6 +2366,7 @@
     $('cntStatic').textContent = results.length;
     $('st').innerHTML = `<span class="dot"></span>Generated ${results.length} static format(s). You can now generate GIFs from this layout.` +
       (autoAlign ? (() => { const h = new Set(); results.forEach(c => (c.hiddenNames || []).forEach(n => h.add(n))); return h.size ? ` Auto-align hid: ${[...h].slice(0, 6).map(esc).join(', ')}${h.size > 6 ? '…' : ''}. Open Layers on a card to bring any back.` : ''; })() : '') +
+      (autoAlign && results.some(c => c.stripNote === 'auto') ? ' Small-size layout picked the main layers itself; use the star in Layers to choose which layers stay on small sizes.' : '') +
       (notes.length ? ` No separate elements were found in ${notes.map(esc).join(', ')}. Use the Elements button on a card to mark them by hand.` : '');
     setBusy(false);
     for (const m of moved) await runGenerate(true, 'img', m);
